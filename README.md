@@ -1,6 +1,7 @@
 # Delta Flow
 
 ### Live Demo:
+
 https://hyperliquid-hack-frontend.vercel.app/
 
 Delta Flow is a highly composable and precise AMM inspired by the Valantis Sovereign Pool architecture.
@@ -57,9 +58,9 @@ USDC/PURR * spot price
 
 ## Delta Liquidity Hedging Operations
 
-This module is enabled by an API off-chain wallet which controlls the operations of the vault on spot and perpetual markets on HyperCore Exchange. 
+This module is enabled by an API off-chain wallet which controlls the operations of the vault on spot and perpetual markets on HyperCore Exchange.
 
-To protect and hedge against deviations in liquidity in our vault, we initiate spot orders to buy PURR tokens when there is excess USDC reserves and perpetual short orders to short PURR when there is excess PURR in the reserves. 
+To protect and hedge against deviations in liquidity in our vault, we initiate spot orders to buy PURR tokens when there is excess USDC reserves and perpetual short orders to short PURR when there is excess PURR in the reserves.
 
 This ensures the best price for our customers on their swaps as well as minimizes our downside for any offsets in our liquidity.
 
@@ -118,7 +119,7 @@ DISCOUNT_SLOPE_BIPS_PER_PCT=5
 ## Deployment
 
 ```shell
-$ forge clean            
+$ forge clean
 $ forge build
 $ forge script contracts/script/DeployAll.s.sol:DeployAll  --rpc-url $TESTNET_RPC_URL  --broadcast -vvvv
 ```

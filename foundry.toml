@@ -2,7 +2,7 @@
 src = "contracts/src"
 out = "out"
 libs = ["contracts/lib", "lib"]
-test = "test"
+test = "contracts/test"
 cache_path = "cache"
 solc = "0.8.30"
 optimizer = true
