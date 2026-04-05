@@ -98,6 +98,10 @@ contract DeployAll is Script {
         pool.setALM(address(alm));
         pool.setSwapFeeModule(address(feeModule));
 
+        // 6) Wire vault -> ALM (for single-sided LP deposit spot price reads)
+        vault.setALM(address(alm));
+        console2.log("Vault wired to ALM for spot price reads");
+
         vm.stopBroadcast();
 
         console2.log("=== FINAL ADDRS ===");

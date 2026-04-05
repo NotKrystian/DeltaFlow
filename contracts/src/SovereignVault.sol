@@ -4,6 +4,7 @@ pragma solidity ^0.8.19;
 import {ISovereignVaultMinimal} from "./interfaces/ISovereignVaultMinimal.sol";
 import {ISovereignPool} from "./interfaces/ISovereignPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
@@ -11,6 +12,12 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CoreWriterLib} from "@hyper-evm-lib/src/CoreWriterLib.sol";
 import {HLConversions} from "@hyper-evm-lib/src/CoreWriterLib.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
+
+/// @dev Minimal interface so the vault can read the spot price from the ALM
+///      without importing the full ALM contract.
+interface ISpotPricer {
+    function getSpotPriceUSDCperPURR() external view returns (uint256);
+}
 
 contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -20,8 +27,15 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     address public immutable strategist;
     address public immutable usdc;
     address public immutable purr;
+    uint8 public immutable usdcDec;
+    uint8 public immutable purrDec;
+
     address public defaultVault;
     uint256 totalAllocatedUSDC;
+
+    /// @notice Address of the deployed ALM. Used only for spot price reads on
+    ///         single-sided deposits. Set by the strategist after ALM deployment.
+    address public alm;
 
     mapping(address => bool) public authorizedPools;
 
@@ -35,6 +49,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     error InsufficientBuffer();
     error InsufficientFundsAfterWithdraw();
     error LP__ZeroAmount();
+    error LP__FirstDepositRequiresBothTokens();
+    error LP__AlmNotSet();
     error LP__InsufficientShares(uint256 got, uint256 min);
     error LP__InsufficientUsdcOut(uint256 got, uint256 min);
     error LP__InsufficientPurrOut(uint256 got, uint256 min);
@@ -54,6 +70,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         defaultVault = 0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0; // HLP
         usdc = _usdc;
         purr = _purr;
+        usdcDec = IERC20Metadata(_usdc).decimals();
+        purrDec = IERC20Metadata(_purr).decimals();
     }
 
     modifier onlyAuthorizedPool() {
@@ -68,6 +86,12 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
     function setAuthorizedPool(address _pool, bool _authorized) external onlyStrategist {
         authorizedPools[_pool] = _authorized;
+    }
+
+    /// @notice Set the ALM address so the vault can read spot price for single-sided deposits.
+    ///         Called once by the strategist after the ALM is deployed and wired to the pool.
+    function setALM(address _alm) external onlyStrategist {
+        alm = _alm;
     }
 
     function _toU64(uint256 x) internal pure returns (uint64) {
@@ -223,18 +247,36 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         reservePurr = IERC20(purr).balanceOf(address(this));
     }
 
-    /// @notice Deposit USDC and PURR to receive LP shares.
-    ///         Amounts should match the current reserve ratio; any excess of either token
-    ///         beyond what earns shares stays in the vault and accrues to all LPs.
-    /// @param usdcAmount Amount of USDC to deposit
-    /// @param purrAmount Amount of PURR to deposit
-    /// @param minShares Minimum shares to receive (slippage protection)
+    /// @notice Deposit USDC and/or PURR to receive LP shares.
+    ///
+    ///         Three deposit modes:
+    ///
+    ///         1. First deposit (supply == 0)
+    ///            Must be two-sided. Shares = geometric mean of both amounts minus
+    ///            MINIMUM_LIQUIDITY, which is permanently locked to prevent share-price
+    ///            manipulation on a tiny pool.
+    ///
+    ///         2. Subsequent two-sided deposit (both amounts > 0)
+    ///            Oracle-free. Shares = min(USDC_ratio, PURR_ratio) × supply.
+    ///            Any excess of the larger side stays in the vault and accrues to all LPs.
+    ///
+    ///         3. Single-sided deposit (exactly one amount > 0)
+    ///            Requires the ALM to be set (for spot price). Shares are value-weighted:
+    ///            shares = depositValue / poolValue × supply, where both values are
+    ///            expressed in USDC using the current spot price. The deposited token
+    ///            sits in the vault and converts to the other token gradually as traders
+    ///            use the pool, with the direction-aware fee module attracting the trades
+    ///            that drive the conversion.
+    ///
+    /// @param usdcAmount  Amount of USDC to deposit (may be 0 for PURR-only deposit)
+    /// @param purrAmount  Amount of PURR to deposit (may be 0 for USDC-only deposit)
+    /// @param minShares   Minimum shares to receive (slippage protection)
     function depositLP(uint256 usdcAmount, uint256 purrAmount, uint256 minShares)
         external
         nonReentrant
         returns (uint256 shares)
     {
-        if (usdcAmount == 0 || purrAmount == 0) revert LP__ZeroAmount();
+        if (usdcAmount == 0 && purrAmount == 0) revert LP__ZeroAmount();
 
         // Sync Core equity before computing share price so any accumulated P&L is
         // reflected and new depositors pay a fair price.
@@ -244,21 +286,41 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 supply = totalSupply();
 
         if (supply == 0) {
-            // First deposit: geometric mean minus locked minimum liquidity.
-            // MINIMUM_LIQUIDITY is permanently locked to address(0xdead) to prevent
-            // share-price manipulation on tiny pools.
+            // Option 1: first deposit
+            // the first depositor sets the initial ratio, which all subsequent value calculations depend on.
+            // Allowing a one-token bootstrap would tie the starting ratio entirely, so we disallow it
+            if (usdcAmount == 0 || purrAmount == 0) revert LP__FirstDepositRequiresBothTokens();
+
             shares = Math.sqrt(usdcAmount * purrAmount) - MINIMUM_LIQUIDITY;
             _mint(address(0xdead), MINIMUM_LIQUIDITY);
-        } else {
-            // Proportional to existing reserves; min() prevents ratio gaming
+        } else if (usdcAmount > 0 && purrAmount > 0) {
+            // Option 2 is a two-sided deposit
+            // Oracle-free. min() ensures shares are proportional to whichever
+            // token is the binding constraint; excess of the other is donated. - like univ2
             shares =
                 Math.min(Math.mulDiv(usdcAmount, supply, reserveUsdc), Math.mulDiv(purrAmount, supply, reservePurr));
+        } else {
+            // Option 3 is a single-sided deposit
+            // Users can deposit one token, which gradually converts into the other
+            // Requires spot price to fairly value the one-token contribution.
+            if (alm == address(0)) revert LP__AlmNotSet();
+
+            // spotPrice: USDC per 1 PURR, scaled to usdcDec decimals
+            // e.g. at $5 with 6-decimal USDC → spotPrice = 5_000_000
+            uint256 spotPrice = ISpotPricer(alm).getSpotPriceUSDCperPURR();
+            uint256 purrScale = 10 ** uint256(purrDec);
+
+            // Express everything in USDC units for a common denominator
+            uint256 poolValue = reserveUsdc + Math.mulDiv(reservePurr, spotPrice, purrScale);
+            uint256 depositValue = usdcAmount + Math.mulDiv(purrAmount, spotPrice, purrScale);
+
+            shares = Math.mulDiv(depositValue, supply, poolValue);
         }
 
         if (shares == 0 || shares < minShares) revert LP__InsufficientShares(shares, minShares);
 
-        IERC20(usdc).safeTransferFrom(msg.sender, address(this), usdcAmount);
-        IERC20(purr).safeTransferFrom(msg.sender, address(this), purrAmount);
+        if (usdcAmount > 0) IERC20(usdc).safeTransferFrom(msg.sender, address(this), usdcAmount);
+        if (purrAmount > 0) IERC20(purr).safeTransferFrom(msg.sender, address(this), purrAmount);
 
         _mint(msg.sender, shares);
         emit LiquidityAdded(msg.sender, usdcAmount, purrAmount, shares);

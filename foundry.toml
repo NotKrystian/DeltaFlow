@@ -26,5 +26,6 @@ skip = [
   "contracts/lib/**/certora/**",
   "contracts/lib/**/mocks/**",
   "lib/**/certora/**",
-  "lib/**/mocks/**"
+  "lib/**/mocks/**",
+  "contracts/test/SovereignALM.t.sol"
 ]

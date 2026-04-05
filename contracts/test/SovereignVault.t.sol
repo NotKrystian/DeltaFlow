@@ -47,6 +47,19 @@ contract MockPURR {
     }
 }
 
+/// @notice Mock ALM for single-sided LP deposit tests — returns a configurable spot price
+contract MockALM {
+    uint256 public price;
+
+    constructor(uint256 _price) {
+        price = _price;
+    }
+
+    function getSpotPriceUSDCperPURR() external view returns (uint256) {
+        return price;
+    }
+}
+
 /// @notice Mock pool for testing vault interactions
 contract MockPool {
     address public token0;
@@ -728,17 +741,24 @@ contract LPTest is Test {
 
     // ─── revert: zero amounts ─────────────────────────────────
 
-    function test_lp_depositZeroUsdc_reverts() public {
-        _fund(lp1, 0, 1_000 * PURR_UNIT);
+    function test_lp_depositBothZero_reverts() public {
         vm.prank(lp1);
         vm.expectRevert(SovereignVault.LP__ZeroAmount.selector);
+        vault.depositLP(0, 0, 0);
+    }
+
+    // Single-sided with supply==0 hits LP__FirstDepositRequiresBothTokens, not LP__ZeroAmount
+    function test_lp_firstDeposit_purrOnlyReverts() public {
+        _fund(lp1, 0, 1_000 * PURR_UNIT);
+        vm.prank(lp1);
+        vm.expectRevert(SovereignVault.LP__FirstDepositRequiresBothTokens.selector);
         vault.depositLP(0, 1_000 * PURR_UNIT, 0);
     }
 
-    function test_lp_depositZeroPurr_reverts() public {
+    function test_lp_firstDeposit_usdcOnlyReverts() public {
         _fund(lp1, 1_000 * USDC_UNIT, 0);
         vm.prank(lp1);
-        vm.expectRevert(SovereignVault.LP__ZeroAmount.selector);
+        vm.expectRevert(SovereignVault.LP__FirstDepositRequiresBothTokens.selector);
         vault.depositLP(1_000 * USDC_UNIT, 0, 0);
     }
 
@@ -857,6 +877,11 @@ contract LPTest is Test {
         // Strategist allocates all USDC to Core — EVM balance drops to zero
         vault.allocate(coreVault, seedUsdc);
 
+        // Force the simulator to reflect the vault equity that allocate() created on Core.
+        // Without this, PrecompileLib.userVaultEquity returns 0 in the fork simulator and
+        // _syncAllCoreAllocations() would zero out totalAllocatedUSDC, making usdcOut==0.
+        CoreSimulatorLib.forceVaultEquity(address(vault), coreVault, uint64(seedUsdc), 0);
+
         uint256 evmUsdc = IERC20(usdc).balanceOf(address(vault));
         assertEq(evmUsdc, 0, "EVM USDC should be zero after full allocation");
 
@@ -946,5 +971,135 @@ contract LPTest is Test {
 
         assertGt(out1Usdc, 1_000 * USDC_UNIT, "lp1 should receive more USDC than deposited due to donation");
         assertEq(out1Usdc, expected1Usdc);
+    }
+
+    // ─── single-sided deposits ────────────────────────────────
+
+    /// @dev Returns a vault that already has ALM set and an initial two-sided seed.
+    ///      The mock ALM returns `spotPrice` USDC (6 dec) per 1 PURR (purrScale = 1e5).
+    function _seedWithAlm(uint256 spotPrice) internal returns (MockALM mockAlm, uint256 seedShares) {
+        mockAlm = new MockALM(spotPrice);
+        vault.setALM(address(mockAlm));
+        seedShares = _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
+    }
+
+    function test_lp_singleSided_almNotSet_reverts() public {
+        // Seed the pool so supply > 0, but do NOT call setALM
+        _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
+
+        _fund(lp2, 500 * USDC_UNIT, 0);
+        vm.prank(lp2);
+        vm.expectRevert(SovereignVault.LP__AlmNotSet.selector);
+        vault.depositLP(500 * USDC_UNIT, 0, 0);
+    }
+
+    function test_lp_singleSidedUsdc_sharesValueWeighted() public {
+        // spot price: 5 USDC per PURR → 5_000_000 (6 dec)
+        uint256 spot = 5 * USDC_UNIT;
+        _seedWithAlm(spot);
+        uint256 supply = vault.totalSupply();
+
+        (uint256 rUsdc, uint256 rPurr) = vault.getReserves();
+        uint256 purrScale = 10 ** 5; // purrDec
+
+        uint256 depositAmt = 500 * USDC_UNIT;
+        uint256 poolValue    = rUsdc + Math.mulDiv(rPurr, spot, purrScale);
+        uint256 depositValue = depositAmt; // USDC-only
+        uint256 expectedShares = Math.mulDiv(depositValue, supply, poolValue);
+
+        _fund(lp2, depositAmt, 0);
+        vm.prank(lp2);
+        uint256 shares = vault.depositLP(depositAmt, 0, 0);
+
+        assertEq(shares, expectedShares, "single-sided USDC shares mismatch");
+        assertEq(vault.balanceOf(lp2), shares);
+        assertEq(IERC20(usdc).balanceOf(lp2), 0, "all USDC transferred in");
+
+        // Ensure no PURR was touched
+        assertEq(purr.balanceOf(lp2), 0, "lp2 has no PURR");
+        assertEq(purr.balanceOf(address(vault)), 1_000 * PURR_UNIT, "vault PURR unchanged");
+    }
+
+    function test_lp_singleSidedPurr_sharesValueWeighted() public {
+        uint256 spot = 5 * USDC_UNIT; // 5 USDC per PURR
+        _seedWithAlm(spot);
+        uint256 supply = vault.totalSupply();
+
+        (uint256 rUsdc, uint256 rPurr) = vault.getReserves();
+        uint256 purrScale = 10 ** 5;
+
+        uint256 depositAmt = 200 * PURR_UNIT; // 200 PURR
+        uint256 poolValue    = rUsdc + Math.mulDiv(rPurr, spot, purrScale);
+        uint256 depositValue = Math.mulDiv(depositAmt, spot, purrScale); // in USDC units
+        uint256 expectedShares = Math.mulDiv(depositValue, supply, poolValue);
+
+        _fund(lp2, 0, depositAmt);
+        vm.prank(lp2);
+        uint256 shares = vault.depositLP(0, depositAmt, 0);
+
+        assertEq(shares, expectedShares, "single-sided PURR shares mismatch");
+        assertEq(vault.balanceOf(lp2), shares);
+        assertEq(purr.balanceOf(lp2), 0, "all PURR transferred in");
+
+        // Ensure no USDC was touched
+        assertEq(IERC20(usdc).balanceOf(lp2), 0, "lp2 has no USDC");
+        assertEq(IERC20(usdc).balanceOf(address(vault)), 1_000 * USDC_UNIT, "vault USDC unchanged");
+    }
+
+    /// @notice Single-sided deposit must not dilute existing LPs — they should be
+    ///         able to redeem at least as much value as before (in USDC terms).
+    function test_lp_singleSided_existingLpNotDiluted() public {
+        uint256 spot = 5 * USDC_UNIT;
+        (, uint256 shares1) = _seedWithAlm(spot);
+
+        // Record lp1's redeemable USDC value before single-sided deposit
+        (uint256 rUsdcBefore, uint256 rPurrBefore) = vault.getReserves();
+        uint256 supplyBefore = vault.totalSupply();
+        uint256 purrScale = 10 ** 5;
+        uint256 lp1ValueBefore = Math.mulDiv(shares1, rUsdcBefore, supplyBefore)
+            + Math.mulDiv(Math.mulDiv(shares1, rPurrBefore, supplyBefore), spot, purrScale);
+
+        // lp2 makes a single-sided USDC deposit
+        uint256 depositAmt = 300 * USDC_UNIT;
+        _fund(lp2, depositAmt, 0);
+        vm.prank(lp2);
+        vault.depositLP(depositAmt, 0, 0);
+
+        // lp1's redeemable value after
+        (uint256 rUsdcAfter, uint256 rPurrAfter) = vault.getReserves();
+        uint256 supplyAfter = vault.totalSupply();
+        uint256 lp1ValueAfter = Math.mulDiv(shares1, rUsdcAfter, supplyAfter)
+            + Math.mulDiv(Math.mulDiv(shares1, rPurrAfter, supplyAfter), spot, purrScale);
+
+        // Value should be >= before (may be slightly greater due to any rounding donation)
+        assertGe(lp1ValueAfter, lp1ValueBefore, "existing LP should not be diluted by single-sided deposit");
+    }
+
+    /// @notice Slippage protection works for single-sided deposits.
+    function test_lp_singleSided_minSharesSlippage_reverts() public {
+        uint256 spot = 5 * USDC_UNIT;
+        _seedWithAlm(spot);
+        uint256 supply = vault.totalSupply();
+
+        (uint256 rUsdc, uint256 rPurr) = vault.getReserves();
+        uint256 purrScale = 10 ** 5;
+        uint256 depositAmt = 100 * USDC_UNIT;
+        uint256 poolValue    = rUsdc + Math.mulDiv(rPurr, spot, purrScale);
+        uint256 expectedShares = Math.mulDiv(depositAmt, supply, poolValue);
+
+        _fund(lp2, depositAmt, 0);
+        vm.prank(lp2);
+        vm.expectRevert(
+            abi.encodeWithSelector(SovereignVault.LP__InsufficientShares.selector, expectedShares, expectedShares + 1)
+        );
+        vault.depositLP(depositAmt, 0, expectedShares + 1);
+    }
+
+    /// @notice setALM is restricted to the strategist.
+    function test_lp_setALM_onlyStrategist() public {
+        address mockAlm = makeAddr("alm");
+        vm.prank(lp1);
+        vm.expectRevert(SovereignVault.OnlyStrategist.selector);
+        vault.setALM(mockAlm);
     }
 }
