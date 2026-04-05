@@ -3,6 +3,12 @@ src = "contracts/src"
 out = "out"
 libs = ["contracts/lib", "lib"]
 test = "contracts/test"
+remappings = [
+  "@hyper-evm-lib/=contracts/lib/hyper-evm-lib/",
+  "@openzeppelin/contracts/=contracts/lib/openzeppelin-contracts/contracts/",
+  "openzeppelin-contracts/=contracts/lib/openzeppelin-contracts/",
+  "forge-std/=contracts/lib/forge-std/src/",
+]
 cache_path = "cache"
 solc = "0.8.30"
 optimizer = true

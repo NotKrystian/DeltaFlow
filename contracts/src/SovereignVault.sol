@@ -5,35 +5,55 @@ import {ISovereignVaultMinimal} from "./interfaces/ISovereignVaultMinimal.sol";
 import {ISovereignPool} from "./interfaces/ISovereignPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CoreWriterLib} from "@hyper-evm-lib/src/CoreWriterLib.sol";
 import {HLConversions} from "@hyper-evm-lib/src/CoreWriterLib.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 
-contract SovereignVault is ISovereignVaultMinimal {
+contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    uint256 public constant MINIMUM_LIQUIDITY = 1_000;
 
     address public immutable strategist;
     address public immutable usdc;
+    address public immutable purr;
     address public defaultVault;
     uint256 totalAllocatedUSDC;
-    uint256 usdcBalance;
-
 
     mapping(address => bool) public authorizedPools;
+
+    // Ordered list of core vaults that have ever received an allocation.
+    // Used to enumerate vaults for automatic equity sync on LP deposit/withdraw.
+    address[] public coreVaultsList;
+    mapping(address => bool) private _coreVaultTracked;
 
     error OnlyAuthorizedPool();
     error OnlyStrategist();
     error InsufficientBuffer();
     error InsufficientFundsAfterWithdraw();
+    error LP__ZeroAmount();
+    error LP__InsufficientShares(uint256 got, uint256 min);
+    error LP__InsufficientUsdcOut(uint256 got, uint256 min);
+    error LP__InsufficientPurrOut(uint256 got, uint256 min);
+    error LP__InsufficientEvmUsdc(uint256 available, uint256 needed);
 
-    constructor(address _usdc) {
+    event LiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 purrAmount, uint256 shares);
+    event LiquidityRemoved(address indexed provider, uint256 usdcOut, uint256 purrOut, uint256 shares);
+    event BridgedToCore(address indexed token, uint256 amount);
+    event BridgedToEvm(address indexed token, uint256 amount);
+    event CoreVaultMoved(address indexed coreVault, bool isDeposit, uint256 amount);
+    event CoreAllocationsSynced(uint256 oldTotal, uint256 newTotal);
+
+    mapping(address => uint256) public allocatedToCoreVault;
+
+    constructor(address _usdc, address _purr) ERC20("DeltaFlow LP", "DFLP") {
         strategist = msg.sender;
         defaultVault = 0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0; // HLP
         usdc = _usdc;
-    }
-
-    function getUSDCBalance() external view returns (uint256) {
-        return IERC20(usdc).balanceOf(address(this));
+        purr = _purr;
     }
 
     modifier onlyAuthorizedPool() {
@@ -88,7 +108,6 @@ contract SovereignVault is ISovereignVaultMinimal {
         IERC20 token = IERC20(_token);
         uint256 internalBalance = token.balanceOf(address(this));
         if (internalBalance >= _amount) {
-            require(IERC20(token).balanceOf(address(this)) >= _amount, "VAULT_INSUFF_OUT");
             token.safeTransfer(recipient, _amount);
             return;
         }
@@ -109,13 +128,11 @@ contract SovereignVault is ISovereignVaultMinimal {
         defaultVault = newVault;
     }
 
+    function getUSDCBalance() external view returns (uint256) {
+        return IERC20(usdc).balanceOf(address(this));
+    }
+
     // ============ VAULT ALLOCATION ============
-
-    event BridgedToCore(address indexed token, uint256 amount);
-    event BridgedToEvm(address indexed token, uint256 amount);
-    event CoreVaultMoved(address indexed coreVault, bool isDeposit, uint256 amount);
-
-    mapping(address => uint256) public allocatedToCoreVault;
 
     /// @notice Bridge USDC from this EVM vault to Core (no vault transfer)
     function bridgeToCoreOnly(uint256 usdcAmount) external onlyStrategist {
@@ -125,6 +142,12 @@ contract SovereignVault is ISovereignVaultMinimal {
 
     /// @notice Bridge USDC to Core and deposit into a specific Core vault (yield/trading)
     function allocate(address coreVault, uint256 usdcAmount) external onlyStrategist {
+        // Register the vault for enumeration so the auto-sync can reach it later
+        if (!_coreVaultTracked[coreVault]) {
+            _coreVaultTracked[coreVault] = true;
+            coreVaultsList.push(coreVault);
+        }
+
         CoreWriterLib.bridgeToCore(usdc, usdcAmount);
         CoreWriterLib.vaultTransfer(coreVault, true, _toU64(usdcAmount));
 
@@ -155,17 +178,128 @@ contract SovereignVault is ISovereignVaultMinimal {
     }
 
     function approveAgent(address agent, string calldata name) external onlyStrategist {
-    // name can be "" to set/replace the main (unnamed) agent
         CoreWriterLib.addApiWallet(agent, name);
     }
-    
 
     function getTotalAllocatedUSDC() external view returns (uint256) {
         return totalAllocatedUSDC;
     }
 
+    function syncCoreAllocations() external onlyStrategist {
+        _syncAllCoreAllocations();
+    }
+
+    function _syncAllCoreAllocations() internal {
+        if (coreVaultsList.length == 0) return;
+
+        uint256 oldTotal = totalAllocatedUSDC;
+        uint256 newTotal = 0;
+
+        for (uint256 i = 0; i < coreVaultsList.length; i++) {
+            address cv = coreVaultsList[i];
+            PrecompileLib.UserVaultEquity memory eq = PrecompileLib.userVaultEquity(address(this), cv);
+            uint256 liveEquity = uint256(eq.equity);
+            allocatedToCoreVault[cv] = liveEquity;
+            newTotal += liveEquity;
+        }
+
+        totalAllocatedUSDC = newTotal;
+
+        if (newTotal != oldTotal) {
+            emit CoreAllocationsSynced(oldTotal, newTotal);
+        }
+    }
+
     function claimPoolManagerFees(uint256 _feePoolManager0, uint256 _feePoolManager1) external onlyAuthorizedPool {
         // Pool manager fees are tracked in the pool, this is called to claim them
         // In this implementation, fees stay in the vault as part of reserves
+    }
+
+    // ============ LP ============
+
+    /// @notice Returns total vault reserves: EVM balance + Core-allocated USDC, and EVM PURR
+    function getReserves() public view returns (uint256 reserveUsdc, uint256 reservePurr) {
+        reserveUsdc = IERC20(usdc).balanceOf(address(this)) + totalAllocatedUSDC;
+        reservePurr = IERC20(purr).balanceOf(address(this));
+    }
+
+    /// @notice Deposit USDC and PURR to receive LP shares.
+    ///         Amounts should match the current reserve ratio; any excess of either token
+    ///         beyond what earns shares stays in the vault and accrues to all LPs.
+    /// @param usdcAmount Amount of USDC to deposit
+    /// @param purrAmount Amount of PURR to deposit
+    /// @param minShares Minimum shares to receive (slippage protection)
+    function depositLP(uint256 usdcAmount, uint256 purrAmount, uint256 minShares)
+        external
+        nonReentrant
+        returns (uint256 shares)
+    {
+        if (usdcAmount == 0 || purrAmount == 0) revert LP__ZeroAmount();
+
+        // Sync Core equity before computing share price so any accumulated P&L is
+        // reflected and new depositors pay a fair price.
+        _syncAllCoreAllocations();
+
+        (uint256 reserveUsdc, uint256 reservePurr) = getReserves();
+        uint256 supply = totalSupply();
+
+        if (supply == 0) {
+            // First deposit: geometric mean minus locked minimum liquidity.
+            // MINIMUM_LIQUIDITY is permanently locked to address(0xdead) to prevent
+            // share-price manipulation on tiny pools.
+            shares = Math.sqrt(usdcAmount * purrAmount) - MINIMUM_LIQUIDITY;
+            _mint(address(0xdead), MINIMUM_LIQUIDITY);
+        } else {
+            // Proportional to existing reserves; min() prevents ratio gaming
+            shares =
+                Math.min(Math.mulDiv(usdcAmount, supply, reserveUsdc), Math.mulDiv(purrAmount, supply, reservePurr));
+        }
+
+        if (shares == 0 || shares < minShares) revert LP__InsufficientShares(shares, minShares);
+
+        IERC20(usdc).safeTransferFrom(msg.sender, address(this), usdcAmount);
+        IERC20(purr).safeTransferFrom(msg.sender, address(this), purrAmount);
+
+        _mint(msg.sender, shares);
+        emit LiquidityAdded(msg.sender, usdcAmount, purrAmount, shares);
+    }
+
+    /// @notice Burn LP shares and receive pro-rata USDC and PURR.
+    ///         Reverts if USDC allocated to Core exceeds the EVM balance available.
+    ///         In that case, the strategist must call deallocate() first.
+    /// @param shares Amount of LP shares to burn
+    /// @param minUsdc Minimum USDC to receive (slippage protection)
+    /// @param minPurr Minimum PURR to receive (slippage protection)
+    function withdrawLP(uint256 shares, uint256 minUsdc, uint256 minPurr)
+        external
+        nonReentrant
+        returns (uint256 usdcOut, uint256 purrOut)
+    {
+        if (shares == 0) revert LP__ZeroAmount();
+
+        // Sync Core equity before computing the redemption value so withdrawing LPs
+        // receive an accurate pro-rata share of all vault assets including any P&L.
+        _syncAllCoreAllocations();
+
+        (uint256 reserveUsdc, uint256 reservePurr) = getReserves();
+        uint256 supply = totalSupply();
+
+        usdcOut = Math.mulDiv(shares, reserveUsdc, supply);
+        purrOut = Math.mulDiv(shares, reservePurr, supply);
+
+        if (usdcOut < minUsdc) revert LP__InsufficientUsdcOut(usdcOut, minUsdc);
+        if (purrOut < minPurr) revert LP__InsufficientPurrOut(purrOut, minPurr);
+
+        // USDC may be partially allocated to Core — revert if EVM balance is insufficient.
+        // The strategist must call deallocate() to bring funds back before this withdrawal.
+        uint256 evmUsdc = IERC20(usdc).balanceOf(address(this));
+        if (evmUsdc < usdcOut) revert LP__InsufficientEvmUsdc(evmUsdc, usdcOut);
+
+        _burn(msg.sender, shares);
+
+        IERC20(usdc).safeTransfer(msg.sender, usdcOut);
+        IERC20(purr).safeTransfer(msg.sender, purrOut);
+
+        emit LiquidityRemoved(msg.sender, usdcOut, purrOut, shares);
     }
 }

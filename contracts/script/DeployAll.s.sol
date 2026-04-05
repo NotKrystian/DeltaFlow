@@ -61,7 +61,7 @@ contract DeployAll is Script {
         vm.startBroadcast(p.pk);
 
         // 0) ALWAYS deploy a fresh vault
-        SovereignVault vault = new SovereignVault(p.usdc);
+        SovereignVault vault = new SovereignVault(p.usdc, p.purr);
         console2.log("Deployed SovereignVault:", address(vault));
 
         // 0.1) Approve HL agent wallet to trade the VAULT's Core balances

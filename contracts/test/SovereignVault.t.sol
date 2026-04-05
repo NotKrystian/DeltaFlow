@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Test, console} from "forge-std/Test.sol";
 import {SovereignVault} from "../src/SovereignVault.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 import {HLConversions} from "@hyper-evm-lib/src/common/HLConversions.sol";
@@ -90,8 +91,8 @@ contract SovereignVaultTest is Test {
         // Deploy mock PURR token
         purr = new MockPURR();
 
-        // Deploy vault with USDC address
-        vault = new SovereignVault(usdcAddress);
+        // Deploy vault with USDC and PURR addresses
+        vault = new SovereignVault(usdcAddress, address(purr));
 
         // Activate the vault account on Core
         CoreSimulatorLib.forceAccountActivation(address(vault));
@@ -172,12 +173,11 @@ contract SovereignVaultTest is Test {
         // and vault equity would be credited. The test verifies the EVM-side logic works.
     }
 
-    function test_allocate_insufficientBuffer() public {
-        // Try to allocate more than allowed (would leave less than MIN_BUFFER)
-        uint256 allocateAmount = 960e6; // Would leave only 40 USDC (below 50 MIN_BUFFER)
-
-        vm.expectRevert(SovereignVault.InsufficientBuffer.selector);
+    function test_allocate_fullBalance() public {
+        // Allocate the full vault balance — allocate() has no buffer guard
+        uint256 allocateAmount = 1000e6;
         vault.allocate(TEST_VAULT, allocateAmount);
+        assertEq(IERC20(usdcAddress).balanceOf(address(vault)), 0, "EVM balance should be zero after full allocation");
     }
 
     function test_allocate_onlyStrategist() public {
@@ -288,7 +288,7 @@ contract VaultCoreIntegrationTest is Test {
         purr = new MockPURR();
 
         // Deploy vault
-        vault = new SovereignVault(usdcAddress);
+        vault = new SovereignVault(usdcAddress, address(purr));
 
         // Activate vault on Core
         CoreSimulatorLib.forceAccountActivation(address(vault));
@@ -456,7 +456,7 @@ contract VaultRecallTest is Test {
         usdcAddress = HLConstants.usdc();
 
         purr = new MockPURR();
-        vault = new SovereignVault(usdcAddress);
+        vault = new SovereignVault(usdcAddress, address(purr));
 
         CoreSimulatorLib.forceAccountActivation(address(vault));
 
@@ -524,7 +524,8 @@ contract VaultDeallocateTest is Test {
         // Get the correct USDC address for this chain
         usdcAddress = HLConstants.usdc();
 
-        vault = new SovereignVault(usdcAddress);
+        MockPURR purrToken = new MockPURR();
+        vault = new SovereignVault(usdcAddress, address(purrToken));
         CoreSimulatorLib.forceAccountActivation(address(vault));
 
         deal(usdcAddress, address(vault), 1000e6);
@@ -555,5 +556,395 @@ contract VaultDeallocateTest is Test {
         vm.prank(user);
         vm.expectRevert(SovereignVault.OnlyStrategist.selector);
         vault.deallocate(TEST_VAULT, 100e6);
+    }
+}
+
+// ============================================================
+// LP TEST SUITE
+// ============================================================
+
+/// @notice Unit tests for SovereignVault LP deposit / withdrawal logic.
+///         Uses a fork so USDC behaves exactly like production; PURR is mocked.
+contract LPTest is Test {
+    // HL testnet fork
+    string constant RPC = "https://hyperliquid-testnet.g.alchemy.com/v2/uSFYHvKqoVOUFsNnbGM7sL_EWO0tf4iS";
+
+    uint256 constant MINIMUM_LIQUIDITY = 1_000;
+
+    // USDC = 6 decimals, MockPURR = 5 decimals
+    uint256 constant USDC_UNIT = 1e6;
+    uint256 constant PURR_UNIT = 1e5;
+
+    SovereignVault vault;
+    MockPURR purr;
+    address usdc;
+
+    address lp1 = makeAddr("lp1");
+    address lp2 = makeAddr("lp2");
+
+    function setUp() public {
+        vm.createSelectFork(RPC);
+        CoreSimulatorLib.init();
+        CoreSimulatorLib.forceAccountActivation(address(this));
+
+        usdc = HLConstants.usdc();
+        purr = new MockPURR();
+        vault = new SovereignVault(usdc, address(purr));
+        CoreSimulatorLib.forceAccountActivation(address(vault));
+        CoreSimulatorLib.forceAccountActivation(lp1);
+        CoreSimulatorLib.forceAccountActivation(lp2);
+    }
+
+    // ─── helpers ──────────────────────────────────────────────
+
+    /// Mint USDC + PURR to `who` and approve the vault.
+    function _fund(address who, uint256 usdcAmt, uint256 purrAmt) internal {
+        deal(usdc, who, usdcAmt);
+        purr.mint(who, purrAmt);
+        vm.startPrank(who);
+        IERC20(usdc).approve(address(vault), type(uint256).max);
+        purr.approve(address(vault), type(uint256).max);
+        vm.stopPrank();
+    }
+
+    // ─── metadata ─────────────────────────────────────────────
+
+    function test_lp_tokenMetadata() public view {
+        assertEq(vault.name(), "DeltaFlow LP");
+        assertEq(vault.symbol(), "DFLP");
+    }
+
+    // ─── first deposit ────────────────────────────────────────
+
+    function test_lp_firstDeposit_sharesAreGeometricMean() public {
+        uint256 usdcAmt = 1_000 * USDC_UNIT; // 1 000 USDC
+        uint256 purrAmt = 1_000 * PURR_UNIT; // 1 000 PURR
+
+        _fund(lp1, usdcAmt, purrAmt);
+
+        uint256 expectedShares = Math.sqrt(usdcAmt * purrAmt) - MINIMUM_LIQUIDITY;
+
+        vm.prank(lp1);
+        uint256 shares = vault.depositLP(usdcAmt, purrAmt, 0);
+
+        assertEq(shares, expectedShares, "first deposit shares should be sqrt(usdc*purr) - MIN_LIQ");
+        assertEq(vault.balanceOf(lp1), shares);
+    }
+
+    function test_lp_firstDeposit_minimumLiquidityLockedToDead() public {
+        uint256 usdcAmt = 1_000 * USDC_UNIT;
+        uint256 purrAmt = 1_000 * PURR_UNIT;
+        _fund(lp1, usdcAmt, purrAmt);
+
+        vm.prank(lp1);
+        vault.depositLP(usdcAmt, purrAmt, 0);
+
+        // Dead address holds the locked minimum liquidity
+        assertEq(vault.balanceOf(address(0xdead)), MINIMUM_LIQUIDITY, "dead address should hold MINIMUM_LIQUIDITY");
+        // Zero address must hold nothing (OZ v5 blocks minting to address(0))
+        assertEq(vault.balanceOf(address(0)), 0, "address(0) should hold nothing");
+    }
+
+    function test_lp_firstDeposit_tokensTransferredToVault() public {
+        uint256 usdcAmt = 1_000 * USDC_UNIT;
+        uint256 purrAmt = 1_000 * PURR_UNIT;
+        _fund(lp1, usdcAmt, purrAmt);
+
+        vm.prank(lp1);
+        vault.depositLP(usdcAmt, purrAmt, 0);
+
+        assertEq(IERC20(usdc).balanceOf(address(vault)), usdcAmt);
+        assertEq(purr.balanceOf(address(vault)), purrAmt);
+        assertEq(IERC20(usdc).balanceOf(lp1), 0);
+        assertEq(purr.balanceOf(lp1), 0);
+    }
+
+    function test_lp_firstDeposit_emitsEvent() public {
+        uint256 usdcAmt = 1_000 * USDC_UNIT;
+        uint256 purrAmt = 1_000 * PURR_UNIT;
+        _fund(lp1, usdcAmt, purrAmt);
+
+        uint256 expectedShares = Math.sqrt(usdcAmt * purrAmt) - MINIMUM_LIQUIDITY;
+
+        vm.expectEmit(true, false, false, true);
+        emit SovereignVault.LiquidityAdded(lp1, usdcAmt, purrAmt, expectedShares);
+
+        vm.prank(lp1);
+        vault.depositLP(usdcAmt, purrAmt, 0);
+    }
+
+    // ─── subsequent deposits ──────────────────────────────────
+
+    /// @dev Helper: seed the vault with an initial LP position from lp1.
+    function _seedVault(uint256 usdcAmt, uint256 purrAmt) internal returns (uint256 seedShares) {
+        _fund(lp1, usdcAmt, purrAmt);
+        vm.prank(lp1);
+        seedShares = vault.depositLP(usdcAmt, purrAmt, 0);
+    }
+
+    function test_lp_subsequentDeposit_proportionalShares() public {
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        _seedVault(seedUsdc, seedPurr);
+        uint256 supply = vault.totalSupply(); // lp1 shares + MINIMUM_LIQUIDITY
+
+        // lp2 deposits exactly half the pool
+        uint256 usdcAmt = 500 * USDC_UNIT;
+        uint256 purrAmt = 500 * PURR_UNIT;
+        _fund(lp2, usdcAmt, purrAmt);
+
+        vm.prank(lp2);
+        uint256 shares = vault.depositLP(usdcAmt, purrAmt, 0);
+
+        // Expected: min(500/1000 * supply, 500/1000 * supply) = supply / 2
+        uint256 expectedUsdc = Math.mulDiv(usdcAmt, supply, seedUsdc);
+        uint256 expectedPurr = Math.mulDiv(purrAmt, supply, seedPurr);
+        uint256 expected = Math.min(expectedUsdc, expectedPurr);
+        assertEq(shares, expected, "proportional shares mismatch");
+        assertEq(vault.balanceOf(lp2), shares);
+    }
+
+    function test_lp_subsequentDeposit_unbalanced_excessStaysInVault() public {
+        _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
+
+        // lp2 deposits too much USDC relative to PURR — excess USDC stays in vault
+        uint256 usdcAmt = 800 * USDC_UNIT;
+        uint256 purrAmt = 200 * PURR_UNIT; // only 200 PURR worth of ratio
+        _fund(lp2, usdcAmt, purrAmt);
+
+        uint256 vaultUsdcBefore = IERC20(usdc).balanceOf(address(vault));
+        uint256 vaultPurrBefore = purr.balanceOf(address(vault));
+
+        vm.prank(lp2);
+        vault.depositLP(usdcAmt, purrAmt, 0);
+
+        // Both full amounts are transferred in
+        assertEq(IERC20(usdc).balanceOf(address(vault)), vaultUsdcBefore + usdcAmt, "full USDC transferred");
+        assertEq(purr.balanceOf(address(vault)), vaultPurrBefore + purrAmt, "full PURR transferred");
+        // lp2 holds nothing back
+        assertEq(IERC20(usdc).balanceOf(lp2), 0);
+        assertEq(purr.balanceOf(lp2), 0);
+    }
+
+    // ─── revert: zero amounts ─────────────────────────────────
+
+    function test_lp_depositZeroUsdc_reverts() public {
+        _fund(lp1, 0, 1_000 * PURR_UNIT);
+        vm.prank(lp1);
+        vm.expectRevert(SovereignVault.LP__ZeroAmount.selector);
+        vault.depositLP(0, 1_000 * PURR_UNIT, 0);
+    }
+
+    function test_lp_depositZeroPurr_reverts() public {
+        _fund(lp1, 1_000 * USDC_UNIT, 0);
+        vm.prank(lp1);
+        vm.expectRevert(SovereignVault.LP__ZeroAmount.selector);
+        vault.depositLP(1_000 * USDC_UNIT, 0, 0);
+    }
+
+    function test_lp_withdrawZeroShares_reverts() public {
+        vm.prank(lp1);
+        vm.expectRevert(SovereignVault.LP__ZeroAmount.selector);
+        vault.withdrawLP(0, 0, 0);
+    }
+
+    // ─── revert: slippage protection ─────────────────────────
+
+    function test_lp_deposit_minSharesSlippage_reverts() public {
+        uint256 usdcAmt = 1_000 * USDC_UNIT;
+        uint256 purrAmt = 1_000 * PURR_UNIT;
+        _fund(lp1, usdcAmt, purrAmt);
+
+        uint256 expectedShares = Math.sqrt(usdcAmt * purrAmt) - MINIMUM_LIQUIDITY;
+
+        vm.prank(lp1);
+        vm.expectRevert(
+            abi.encodeWithSelector(SovereignVault.LP__InsufficientShares.selector, expectedShares, expectedShares + 1)
+        );
+        vault.depositLP(usdcAmt, purrAmt, expectedShares + 1);
+    }
+
+    function test_lp_withdraw_minUsdcSlippage_reverts() public {
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        uint256 shares = _seedVault(seedUsdc, seedPurr);
+
+        (uint256 reserveUsdc,) = vault.getReserves();
+        uint256 supply = vault.totalSupply();
+        uint256 expectedUsdc = Math.mulDiv(shares, reserveUsdc, supply);
+
+        vm.prank(lp1);
+        vm.expectRevert(
+            abi.encodeWithSelector(SovereignVault.LP__InsufficientUsdcOut.selector, expectedUsdc, expectedUsdc + 1)
+        );
+        vault.withdrawLP(shares, expectedUsdc + 1, 0);
+    }
+
+    function test_lp_withdraw_minPurrSlippage_reverts() public {
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        uint256 shares = _seedVault(seedUsdc, seedPurr);
+
+        (, uint256 reservePurr) = vault.getReserves();
+        uint256 supply = vault.totalSupply();
+        uint256 expectedPurr = Math.mulDiv(shares, reservePurr, supply);
+
+        vm.prank(lp1);
+        vm.expectRevert(
+            abi.encodeWithSelector(SovereignVault.LP__InsufficientPurrOut.selector, expectedPurr, expectedPurr + 1)
+        );
+        vault.withdrawLP(shares, 0, expectedPurr + 1);
+    }
+
+    // ─── withdrawal: happy path ───────────────────────────────
+
+    function test_lp_withdraw_proRataAmounts() public {
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        uint256 shares = _seedVault(seedUsdc, seedPurr);
+
+        (uint256 reserveUsdc, uint256 reservePurr) = vault.getReserves();
+        uint256 supply = vault.totalSupply();
+        uint256 expectedUsdc = Math.mulDiv(shares, reserveUsdc, supply);
+        uint256 expectedPurr = Math.mulDiv(shares, reservePurr, supply);
+
+        vm.prank(lp1);
+        (uint256 usdcOut, uint256 purrOut) = vault.withdrawLP(shares, 0, 0);
+
+        assertEq(usdcOut, expectedUsdc, "USDC out mismatch");
+        assertEq(purrOut, expectedPurr, "PURR out mismatch");
+        assertEq(IERC20(usdc).balanceOf(lp1), expectedUsdc);
+        assertEq(purr.balanceOf(lp1), expectedPurr);
+    }
+
+    function test_lp_withdraw_burnsSharesToZero() public {
+        uint256 shares = _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
+
+        vm.prank(lp1);
+        vault.withdrawLP(shares, 0, 0);
+
+        assertEq(vault.balanceOf(lp1), 0);
+        // Only the permanently locked MINIMUM_LIQUIDITY remains
+        assertEq(vault.totalSupply(), MINIMUM_LIQUIDITY);
+    }
+
+    function test_lp_withdraw_emitsEvent() public {
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        uint256 shares = _seedVault(seedUsdc, seedPurr);
+
+        (uint256 reserveUsdc, uint256 reservePurr) = vault.getReserves();
+        uint256 supply = vault.totalSupply();
+        uint256 expectedUsdc = Math.mulDiv(shares, reserveUsdc, supply);
+        uint256 expectedPurr = Math.mulDiv(shares, reservePurr, supply);
+
+        vm.expectEmit(true, false, false, true);
+        emit SovereignVault.LiquidityRemoved(lp1, expectedUsdc, expectedPurr, shares);
+
+        vm.prank(lp1);
+        vault.withdrawLP(shares, 0, 0);
+    }
+
+    // ─── withdrawal: insufficient EVM USDC ───────────────────
+
+    function test_lp_withdraw_revertsWhenUsdcInCore() public {
+        address coreVault = 0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0; // HLP
+
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        uint256 shares = _seedVault(seedUsdc, seedPurr);
+
+        // Strategist allocates all USDC to Core — EVM balance drops to zero
+        vault.allocate(coreVault, seedUsdc);
+
+        uint256 evmUsdc = IERC20(usdc).balanceOf(address(vault));
+        assertEq(evmUsdc, 0, "EVM USDC should be zero after full allocation");
+
+        // getReserves still includes totalAllocatedUSDC so usdcOut > 0
+        (uint256 reserveUsdc,) = vault.getReserves();
+        uint256 supply = vault.totalSupply();
+        uint256 expectedUsdcOut = Math.mulDiv(shares, reserveUsdc, supply);
+
+        vm.prank(lp1);
+        vm.expectRevert(
+            abi.encodeWithSelector(SovereignVault.LP__InsufficientEvmUsdc.selector, evmUsdc, expectedUsdcOut)
+        );
+        vault.withdrawLP(shares, 0, 0);
+    }
+
+    // ─── getReserves ──────────────────────────────────────────
+
+    function test_lp_getReserves_includesAllocated() public {
+        uint256 seedUsdc = 1_000 * USDC_UNIT;
+        uint256 seedPurr = 1_000 * PURR_UNIT;
+        _seedVault(seedUsdc, seedPurr);
+
+        address coreVault = 0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0;
+        uint256 allocateAmt = 600 * USDC_UNIT;
+        vault.allocate(coreVault, allocateAmt);
+
+        (uint256 reserveUsdc, uint256 reservePurr) = vault.getReserves();
+
+        // USDC reserve = EVM balance + totalAllocatedUSDC
+        assertEq(reserveUsdc, seedUsdc, "total USDC reserve must equal original deposit");
+        assertEq(reservePurr, seedPurr, "PURR reserve unchanged");
+    }
+
+    // ─── multi-LP share fairness ──────────────────────────────
+
+    function test_lp_twoLPs_fairSharesOnWithdraw() public {
+        // lp1 seeds the vault
+        uint256 seed = 1_000 * USDC_UNIT;
+        uint256 shares1 = _seedVault(seed, 1_000 * PURR_UNIT);
+
+        // lp2 deposits the same ratio
+        _fund(lp2, seed, 1_000 * PURR_UNIT);
+        vm.prank(lp2);
+        uint256 shares2 = vault.depositLP(seed, 1_000 * PURR_UNIT, 0);
+
+        uint256 supply = vault.totalSupply();
+        (uint256 rUsdc, uint256 rPurr) = vault.getReserves();
+
+        uint256 expected1Usdc = Math.mulDiv(shares1, rUsdc, supply);
+        uint256 expected1Purr = Math.mulDiv(shares1, rPurr, supply);
+        uint256 expected2Usdc = Math.mulDiv(shares2, rUsdc, supply);
+        uint256 expected2Purr = Math.mulDiv(shares2, rPurr, supply);
+
+        vm.prank(lp1);
+        (uint256 out1Usdc, uint256 out1Purr) = vault.withdrawLP(shares1, 0, 0);
+        vm.prank(lp2);
+        (uint256 out2Usdc, uint256 out2Purr) = vault.withdrawLP(shares2, 0, 0);
+
+        assertEq(out1Usdc, expected1Usdc, "lp1 USDC out");
+        assertEq(out1Purr, expected1Purr, "lp1 PURR out");
+        assertEq(out2Usdc, expected2Usdc, "lp2 USDC out");
+        assertEq(out2Purr, expected2Purr, "lp2 PURR out");
+
+        // lp1 receives marginally less than lp2 because the MINIMUM_LIQUIDITY burn on
+        // first deposit slightly dilutes lp1's share count. This is expected and the
+        // difference is proportional to MINIMUM_LIQUIDITY / totalSupply (~1.6 ppm here).
+        assertLt(out1Usdc, out2Usdc, "lp1 gets slightly less USDC due to MINIMUM_LIQUIDITY tax");
+        assertLt(out1Purr, out2Purr, "lp1 gets slightly less PURR due to MINIMUM_LIQUIDITY tax");
+    }
+
+    function test_lp_earlyLP_benefitsFromDonation() public {
+        // lp1 seeds the vault
+        uint256 shares1 = _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
+
+        // lp2 deposits unbalanced (800 USDC, 200 PURR) — 600 USDC is "donated"
+        _fund(lp2, 800 * USDC_UNIT, 200 * PURR_UNIT);
+        vm.prank(lp2);
+        vault.depositLP(800 * USDC_UNIT, 200 * PURR_UNIT, 0);
+
+        // lp1 withdraws; the donated USDC should increase their payout
+        (uint256 rUsdc,) = vault.getReserves();
+        uint256 supply = vault.totalSupply();
+        uint256 expected1Usdc = Math.mulDiv(shares1, rUsdc, supply);
+
+        vm.prank(lp1);
+        (uint256 out1Usdc,) = vault.withdrawLP(shares1, 0, 0);
+
+        assertGt(out1Usdc, 1_000 * USDC_UNIT, "lp1 should receive more USDC than deposited due to donation");
+        assertEq(out1Usdc, expected1Usdc);
     }
 }
