@@ -1,0 +1,11 @@
+# GitBook Git Sync — https://docs.gitbook.com/getting-started/git-sync/content-configuration
+# Point GitBook integration at this folder (or set the same path in the GitBook UI).
+root: ./docs/
+
+structure:
+  readme: README.md
+  summary: SUMMARY.md
+
+# Optional: old URL → new path (paths relative to root above)
+# redirects:
+#   old-page: guides/quick-start.md

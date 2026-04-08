@@ -12,6 +12,10 @@ Delta Flow brings a new class of AMMs to market that: prices swaps based on spot
 
 ![Delta Flow Logo](frontend/public/flow.png)
 
+## GitBook documentation
+
+Published documentation is maintained under [`docs/`](./docs/). The repo includes [`.gitbook.yaml`](./.gitbook.yaml) so **GitBook → Git sync** uses `./docs/` as the content root (`README.md` + `SUMMARY.md`). In GitBook, connect this repository and set the same root if the UI does not pick it up automatically.
+
 ## Delta Flow has four modules:
 
 - Delta Vault
