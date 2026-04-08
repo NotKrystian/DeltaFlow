@@ -8,6 +8,7 @@
 ## Architecture
 
 * [System overview](architecture/overview.md)
+* [Current implementation — trading, fees, routing](architecture/current-implementation.md)
 
 ## Protocol
 

@@ -1,30 +1,31 @@
 # System overview
 
-DeltaFlow separates **pricing**, **risk**, **inventory accounting**, and **hedge lifecycle** while keeping swaps on **HyperEVM** and connecting to **HyperCore** precompiles and bridges where needed.
+{% hint style="success" %}
+**Authoritative detail for the current repo:** [Current implementation — trading, fees, routing](current-implementation.md) (USDC/PURR, balance-seeking fees, vault ↔ Core).
+{% endhint %}
 
-## On-chain (HyperEVM)
+DeltaFlow is designed around **spot-index pricing**, **vault-held liquidity**, and **HyperCore** connectivity on **HyperEVM**. The exact modules deployed vary by branch; the page linked above matches **`contracts/src`** in this repository.
+
+## On-chain (HyperEVM) — present in this repo
 
 | Layer | Role |
 |--------|------|
-| **SovereignPool** | Valantis-style pool: swap routing, ALM quote consumption, optional vault-held reserves. |
-| **SovereignALM** | Liquidity quotes from Hyperliquid **spot index** (precompiles via `PrecompileLib`); integrates DeltaFlow modules. |
-| **DeltaFlowQuoteEngine** | Multi-component fee model (`ISwapFeeModule`). |
-| **DeltaFlowRiskEngine** | Trade acceptance / rejection vs inventory and market stress. |
-| **CircuitBreaker** | Graduated limits (L0–L5). |
-| **DeltaFlowState** | Inventory, NAV, fee and hedge cost aggregates. |
-| **HedgeExecutor** | On-chain FSM for hedge submission, fills, settlement, timeouts. |
-| **DeltaFlowLPToken** | LP shares with withdrawal cooldown semantics. |
-| **SovereignVault** | Token custody and HyperCore-related flows. |
+| **SovereignPool** | Valantis-style pool: swap routing, swap fee module, ALM quote, vault token flows. |
+| **SovereignALM** | Quotes **USDC/PURR** from the Hyperliquid **spot index** (`PrecompileLib`); enforces vault liquidity for `tokenOut`. |
+| **BalanceSeekingSwapFeeModuleV3** | Optional `ISwapFeeModule`: **base fee + imbalance** vs spot-valued inventory, clamped to min/max bips. |
+| **SovereignVault** | LP token (`DFLP`), deposits/withdrawals, **USDC** bridge/allocate/deallocate via **CoreWriter**, `sendTokensToRecipient` for swaps. |
 
 ## HyperCore
 
-Oracle, mark, BBO, spot balance, and **CoreWriter** precompiles sit under Hyperliquid’s L1; the README in the repo lists testnet addresses (e.g. Oracle `0x…807`, CoreWriter `0x…3333`).
+Oracle, mark, BBO, spot balance, and **CoreWriter** precompiles sit under Hyperliquid’s stack; the repo README lists useful testnet addresses.
 
 ## Off-chain
 
 | Component | Role |
 |-----------|------|
-| **Backend (FastAPI)** | WebSocket log subscription (e.g. swaps), REST + `/ws`, optional Hyperliquid spot orders and keeper txs to `HedgeExecutor`. |
-| **Frontend (Next.js)** | Wallet connect to chain `998`, swap / add / remove liquidity, dashboard and strategist tooling. |
+| **Backend (FastAPI)** | Swap log subscription, REST + `/ws`, optional **Hyperliquid spot** rebalance when enabled. |
+| **Frontend (Next.js)** | Wallet on chain `998`, swap and liquidity UI. |
 
-For sequence diagrams and fee/risk enumerations, see the main repository **README.md** (architecture and lifecycle sections).
+## Roadmap / extended design
+
+A fuller design can add separate **risk**, **multi-component quote**, **circuit breaker**, **on-chain hedge FSM**, and dedicated **LP token** contracts. Those are **not** described as deployed here — see the [current implementation](current-implementation.md) page for scope.

@@ -8,13 +8,16 @@ This documentation mirrors the protocol at a high level. For implementation deta
 
 | If you want to… | Go to |
 |-----------------|--------|
+| **What the code does today** (fees, swaps, Core) | [Current implementation](architecture/current-implementation.md) |
 | Run the stack locally | [Quick start](getting-started/quick-start.md) |
 | Understand the system | [Architecture](architecture/overview.md) |
 | On-chain components | [Protocol contracts](protocol/contracts.md) |
-| Backend & keeper | [Backend API](operations/backend-api.md) |
+| Backend & API | [Backend API](operations/backend-api.md) |
 
 ## At a glance
 
 - **Chain:** Hyperliquid Testnet HyperEVM (chain ID `998`) for development.
-- **Core:** `SovereignPool` + `SovereignALM` + `SovereignVault`, with DeltaFlow modules (quote engine, risk engine, state, circuit breaker, hedge executor, LP token).
-- **Off-chain:** FastAPI backend for events, optional Hyperliquid spot trading and hedge reporting; Next.js frontend for swaps and liquidity.
+- **On-chain:** `SovereignPool` + `SovereignALM` (USDC/PURR spot index quotes) + `SovereignVault` (LP, USDC ↔ HyperCore via `CoreWriterLib`) + optional `SwapFeeModuleV3` balance-seeking fees.
+- **Off-chain:** FastAPI backend for swap logs and optional Hyperliquid **spot** rebalance; Next.js for swaps and liquidity.
+
+For the **accurate, code-level** description (fees, routing, what is *not* in the repo), start with [Current implementation](architecture/current-implementation.md).

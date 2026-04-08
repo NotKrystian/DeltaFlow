@@ -1,24 +1,19 @@
 # Protocol contracts
 
-Deployment order for the full stack is scripted in `contracts/script/DeployDeltaFlow.s.sol` (vault → pool → state → circuit breaker → quote/risk engines → ALM → hedge executor → LP token → wiring).
+Deploy scripts live under `contracts/script/` (e.g. **`DeployAll.s.sol`**, **`DeploySovereignVault.s.sol`**). Exact constructor wiring depends on your deployment — see the scripts and [Current implementation](../architecture/current-implementation.md) for what exists in **`contracts/src`**.
 
-## Core
+## Core (this repo)
 
-- **SovereignPool** — Pool entrypoint for swaps and liquidity; coordinates ALM and fee module.
-- **SovereignALM** — WETH/USDC quoting using the configured spot index; checks vault liquidity; routes through risk, circuit breaker, state, and hedge executor when configured.
-- **SovereignVault** — Holds assets and integrates with vault/agent patterns used on Hyperliquid.
+- **SovereignPool** — Swaps and pool configuration; calls the swap fee module (if set), then the ALM, then settles tokens and fees.
+- **SovereignALM** — **USDC/PURR** quotes from **`PrecompileLib.normalizedSpotPx`**; reverts if the vault cannot deliver **`tokenOut`** (+ buffer).
+- **SovereignVault** — **ERC-20 LP** shares, `depositLP` / `withdrawLP`, **USDC** ↔ **HyperCore** via **`CoreWriterLib`**, **`sendTokensToRecipient`** for swap payouts.
 
-## DeltaFlow modules
+## Swap fees
 
-- **DeltaFlowQuoteEngine** — Fee components (execution, impact, delay, basis, funding, inventory skew, exhaustion, safety tiers).
-- **DeltaFlowRiskEngine** — Exposure, venue, fee cap, shortfall, hedge feasibility, stress rules.
-- **CircuitBreaker** — Degradation levels affecting fees, size caps, and allowed trade directions.
-- **DeltaFlowState** — Authoritative on-chain accounting surface for strategy and analytics.
-- **HedgeExecutor** — State machine for hedge trades tied to swaps.
-- **DeltaFlowLPToken** — ERC-20 LP representation linked to vault/state.
+- **BalanceSeekingSwapFeeModuleV3** (`SwapFeeModuleV3.sol`) — Implements **`ISwapFeeModule`**: **base + imbalance** fee in bips, optional liquidity revert paths. Used when the pool’s swap fee module points to this contract.
 
-## Legacy / auxiliary
+If no fee module is configured, the pool uses its **default swap fee bips** (see `SovereignPool`).
 
-- **SwapFeeModuleV3** — Balance-seeking fee module where used as fallback.
+## Source of truth
 
-Source of truth for ABIs and addresses: `contracts/src/` and your deployment `.env` / frontend `NEXT_PUBLIC_*` variables.
+ABIs and bytecode: **`contracts/src/`** and Foundry **`out/`**. Runtime addresses: deployment records and **`NEXT_PUBLIC_*`** / backend `.env` variables.
