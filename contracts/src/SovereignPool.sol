@@ -90,6 +90,8 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
     error SovereignPool___handleTokenInOnSwap_excessiveTokenInErrorOnTransfer();
     error SovereignPool___handleTokenInOnSwap_invalidTokenInAmount();
     error SovereignPool___verifyPermission_onlyPermissionedAccess(address sender, uint8 accessType);
+    error SovereignPool__hedgePerpRequired();
+    error SovereignPool__swap_hedgePerpMismatch();
 
     /************************************************
      *  CONSTANTS
@@ -137,6 +139,12 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
      *            But if `sovereignVault != address(this)`, output token can be any other token.
      */
     address public immutable sovereignVault;
+
+    /**
+     *     @notice HyperCore perp asset index that must match `SovereignVault.hedgePerpAssetIndex` for this pair.
+     *     @dev Zero when `sovereignVault == address(this)` (pool-held reserves). Non-zero required when using an external vault.
+     */
+    uint32 public immutable hedgePerpAssetIndex;
 
     /**
      *     @notice Address of Protocol Factory.
@@ -302,6 +310,11 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
         }
 
         sovereignVault = args.sovereignVault == address(0) ? address(this) : args.sovereignVault;
+
+        hedgePerpAssetIndex = args.hedgePerpAssetIndex;
+        if (sovereignVault != address(this)) {
+            if (args.hedgePerpAssetIndex == 0) revert SovereignPool__hedgePerpRequired();
+        }
 
         _verifierModule = IVerifierModule(args.verifierModule);
 
@@ -666,6 +679,10 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
         if (vault != address(this)) {
             usdcToken = ISovereignVaultMinimal(vault).usdc();
             usdcBefore = IERC20(usdcToken).balanceOf(vault);
+            uint32 vHedge = ISovereignVaultMinimal(vault).hedgePerpAssetIndex();
+            if (vHedge != hedgePerpAssetIndex || vHedge == 0) {
+                revert SovereignPool__swap_hedgePerpMismatch();
+            }
         }
         if (block.timestamp > _swapParams.deadline) {
             revert SovereignPool__swap_expired();
@@ -818,7 +835,20 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
             ISovereignALM(alm).onSwapCallback(_swapParams.isZeroToOne, amountInUsed, amountOut);
         }
 
-       
+        // Per-swap perp hedge (vault uses CoreWriter; disabled when hedgePerpAssetIndex == 0)
+        if (vault != address(this)) {
+            address purrToken = ISovereignVaultMinimal(vault).purr();
+            bool vaultPurrOut = (_swapParams.swapTokenOut == purrToken);
+            uint256 purrWei;
+            if (vaultPurrOut) {
+                purrWei = amountOut;
+            } else if (address(swapCache.tokenInPool) == purrToken) {
+                purrWei = liquidityQuote.amountInFilled;
+            }
+            if (purrWei > 0) {
+                ISovereignVaultMinimal(vault).hedgeAfterSwap(vaultPurrOut, purrWei);
+            }
+        }
 
         emit Swap(msg.sender, _swapParams.isZeroToOne, amountInUsed, effectiveFee, amountOut, usdcDelta);
     }

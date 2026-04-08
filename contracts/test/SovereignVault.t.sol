@@ -144,6 +144,28 @@ contract SovereignVaultTest is Test {
         vault.setAuthorizedPool(user, true);
     }
 
+    function test_hedgeAfterSwap_noopWhenDisabled() public {
+        vm.prank(address(pool));
+        vault.hedgeAfterSwap(true, 1e5);
+    }
+
+    function test_hedgeAfterSwap_noopWhenZeroAmount() public {
+        vault.setHedgePerpAsset(1);
+        vm.prank(address(pool));
+        vault.hedgeAfterSwap(true, 0);
+    }
+
+    function test_hedgeAfterSwap_onlyAuthorizedPool() public {
+        vm.expectRevert(SovereignVault.OnlyAuthorizedPool.selector);
+        vault.hedgeAfterSwap(true, 1e5);
+    }
+
+    function test_setHedgePerpAsset_onlyStrategist() public {
+        vm.prank(user);
+        vm.expectRevert(SovereignVault.OnlyStrategist.selector);
+        vault.setHedgePerpAsset(1);
+    }
+
     function test_getTokensForPool() public view {
         address[] memory tokens = vault.getTokensForPool(address(pool));
 

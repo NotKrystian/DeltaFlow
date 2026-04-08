@@ -11,6 +11,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CoreWriterLib} from "@hyper-evm-lib/src/CoreWriterLib.sol";
 import {HLConversions} from "@hyper-evm-lib/src/CoreWriterLib.sol";
+import {HLConstants} from "@hyper-evm-lib/src/common/HLConstants.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 
 /// @dev Minimal interface so the vault can read the spot price from the ALM
@@ -62,8 +63,12 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     event BridgedToEvm(address indexed token, uint256 amount);
     event CoreVaultMoved(address indexed coreVault, bool isDeposit, uint256 amount);
     event CoreAllocationsSynced(uint256 oldTotal, uint256 newTotal);
+    event SwapHedgeExecuted(uint32 indexed perpAsset, bool vaultPurrOut, uint256 purrAmountWei, uint64 sz);
 
     mapping(address => uint256) public allocatedToCoreVault;
+
+    /// @notice HyperCore perp asset index for swap hedges (PURR perp). 0 = disabled (no CoreWriter call).
+    uint32 public hedgePerpAssetIndex;
 
     constructor(address _usdc, address _purr) ERC20("DeltaFlow LP", "DFLP") {
         strategist = msg.sender;
@@ -92,6 +97,32 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     ///         Called once by the strategist after the ALM is deployed and wired to the pool.
     function setALM(address _alm) external onlyStrategist {
         alm = _alm;
+    }
+
+    /// @notice Sets the perp used to hedge inventory from swaps. Set to 0 to disable on-chain hedging.
+    function setHedgePerpAsset(uint32 perpAssetIndex) external onlyStrategist {
+        hedgePerpAssetIndex = perpAssetIndex;
+    }
+
+    /// @inheritdoc ISovereignVaultMinimal
+    function hedgeAfterSwap(bool vaultPurrOut, uint256 purrAmountWei) external onlyAuthorizedPool {
+        uint32 perpIx = hedgePerpAssetIndex;
+        if (perpIx == 0 || purrAmountWei == 0) return;
+
+        uint64 tokenIdx = PrecompileLib.getTokenIndex(purr);
+        uint64 weiAmt = HLConversions.evmToWei(tokenIdx, purrAmountWei);
+        uint64 sz = HLConversions.weiToSz(tokenIdx, weiAmt);
+        if (sz == 0) return;
+
+        bool isBuy = vaultPurrOut;
+        uint64 limitPx = isBuy ? type(uint64).max : 0;
+        uint128 cloid = uint128(uint256(keccak256(abi.encodePacked(block.number, purrAmountWei, vaultPurrOut, msg.sender))));
+
+        CoreWriterLib.placeLimitOrder(
+            perpIx, isBuy, limitPx, sz, false, HLConstants.LIMIT_ORDER_TIF_IOC, cloid
+        );
+
+        emit SwapHedgeExecuted(perpIx, vaultPurrOut, purrAmountWei, sz);
     }
 
     function _toU64(uint256 x) internal pure returns (uint64) {

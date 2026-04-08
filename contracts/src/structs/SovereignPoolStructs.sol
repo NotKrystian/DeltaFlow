@@ -17,6 +17,8 @@ struct SovereignPoolConstructorArgs {
     uint256 token0AbsErrorTolerance;
     uint256 token1AbsErrorTolerance;
     uint256 defaultSwapFeeBips;
+    /// @notice HyperCore perp asset index for this base/USDC pair (swap hedge). Must match `SovereignVault.hedgePerpAssetIndex` when using an external vault. Use 0 when `sovereignVault` is the pool itself.
+    uint32 hedgePerpAssetIndex;
 }
 
 struct SovereignPoolSwapContextData {

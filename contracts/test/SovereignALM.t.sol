@@ -38,7 +38,8 @@ contract SovereignALMForkTest is Test {
             isToken1Rebase: false,
             token0AbsErrorTolerance: 0,
             token1AbsErrorTolerance: 0,
-            defaultSwapFeeBips: 30
+            defaultSwapFeeBips: 30,
+            hedgePerpAssetIndex: 0
         });
 
         pool = new SovereignPool(args);
@@ -190,7 +191,8 @@ contract SovereignALMSwapTest is Test {
             isToken1Rebase: true,  // Use balanceOf for reserve checks
             token0AbsErrorTolerance: 10, // Max allowed is 10
             token1AbsErrorTolerance: 10, // Max allowed is 10
-            defaultSwapFeeBips: 30 // 0.3% fee
+            defaultSwapFeeBips: 30, // 0.3% fee
+            hedgePerpAssetIndex: 0
         });
 
         pool = new SovereignPool(args);

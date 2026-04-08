@@ -168,6 +168,7 @@ abstract contract AmmDeployBase is Script {
     }
 
     function _deployPool(Params memory p, address vaultAddr) internal returns (SovereignPool pool) {
+        require(p.dfPerpIndex != type(uint32).max, "PERP_INDEX_REQUIRED_FOR_VAULT_POOL");
         SovereignPoolConstructorArgs memory args = SovereignPoolConstructorArgs({
             token0: p.purr,
             token1: p.usdc,
@@ -179,7 +180,8 @@ abstract contract AmmDeployBase is Script {
             isToken0Rebase: false,
             isToken1Rebase: false,
             token0AbsErrorTolerance: 0,
-            token1AbsErrorTolerance: 0
+            token1AbsErrorTolerance: 0,
+            hedgePerpAssetIndex: p.dfPerpIndex
         });
 
         pool = new SovereignPool(args);
@@ -247,6 +249,8 @@ abstract contract AmmDeployBase is Script {
         );
 
         fs.setPool(address(pool));
+        // Composite calls `accrueFromPool` (msg.sender = fee module), not SovereignPool directly.
+        fs.setSwapFeeModule(address(comp));
 
         return (address(comp), address(fs), address(risk));
     }
@@ -301,6 +305,11 @@ abstract contract AmmDeployBase is Script {
         pool.setSwapFeeModule(feeAddr);
 
         vault.setALM(address(alm));
+
+        if (p.dfPerpIndex != type(uint32).max) {
+            vault.setHedgePerpAsset(p.dfPerpIndex);
+            console2.log("HEDGE_PERP_ASSET_INDEX (swap hedge):", p.dfPerpIndex);
+        }
 
         uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);
         uint64 spotIdx = PrecompileLib.getSpotIndex(p.purr);
