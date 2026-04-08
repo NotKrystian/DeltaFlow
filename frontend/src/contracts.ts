@@ -20,6 +20,10 @@ export const ADDRESSES = {
 
   // HyperCore
   HLP_VAULT: "0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0" as const,
+
+  /** CoreWriter hedge escrow — set `NEXT_PUBLIC_HEDGE_ESCROW` after deploy */
+  HEDGE_ESCROW: (process.env.NEXT_PUBLIC_HEDGE_ESCROW ??
+    "0x0000000000000000000000000000000000000000") as `0x${string}`,
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1080,7 +1084,8 @@ export const FEE_MODULE_ABI = [
       { name: "_usdc", type: "address" },
       { name: "_purr", type: "address" },
       { name: "_spotIndexPURR", type: "uint64" },
-      { name: "_invertPurrPx", type: "bool" },
+      { name: "_rawPxScale", type: "uint256" },
+      { name: "_rawIsPurrPerUsdc", type: "bool" },
       { name: "_baseFeeBips", type: "uint256" },
       { name: "_minFeeBips", type: "uint256" },
       { name: "_maxFeeBips", type: "uint256" },
@@ -1163,11 +1168,25 @@ export const FEE_MODULE_ABI = [
   },
 
   {
-    name: "invertPurrPx",
+    name: "baseDec",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    name: "rawIsPurrPerUsdc",
     type: "function",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "rawPxScale",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
   },
   {
     name: "liquidityBufferBps",
@@ -1217,6 +1236,13 @@ export const FEE_MODULE_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
+  },
+  {
+    name: "usdcDec",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
   },
 
   // errors
@@ -1278,7 +1304,8 @@ export const SOVEREIGN_ALM_ABI = [
       { name: "_usdc", type: "address" },
       { name: "_purr", type: "address" },
       { name: "_spotIndexPURR", type: "uint64" },
-      { name: "_invertPurrPx", type: "bool" },
+      { name: "_rawPxScale", type: "uint256" },
+      { name: "_rawIsPurrPerUsdc", type: "bool" },
       { name: "_liquidityBufferBps", type: "uint256" },
     ],
   },
@@ -1322,14 +1349,6 @@ export const SOVEREIGN_ALM_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "pxUSDCperPURR", type: "uint256" }],
-  },
-
-  {
-    name: "invertPurrPx",
-    type: "function",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ name: "", type: "bool" }],
   },
 
   {
@@ -1381,6 +1400,30 @@ export const SOVEREIGN_ALM_ABI = [
   },
 
   {
+    name: "purrDec",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+
+  {
+    name: "rawIsPurrPerUsdc",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+
+  {
+    name: "rawPxScale",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+
+  {
     name: "spotIndexPURR",
     type: "function",
     stateMutability: "view",
@@ -1394,6 +1437,14 @@ export const SOVEREIGN_ALM_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "address" }],
+  },
+
+  {
+    name: "usdcDec",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
   },
 
   // errors
@@ -1439,6 +1490,44 @@ export const SOVEREIGN_ALM_ABI = [
     name: "SovereignALM__ZeroPrice",
     type: "error",
     inputs: [],
+  },
+] as const;
+
+// HedgeEscrow — CoreWriter limit orders + claim (see `contracts/src/HedgeEscrow.sol`)
+export const HEDGE_ESCROW_ABI = [
+  {
+    type: "function",
+    name: "openBuyPurrWithUsdc",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "usdcEvmIn", type: "uint256" },
+      { name: "limitPx1e8", type: "uint64" },
+      { name: "sz1e8", type: "uint64" },
+      { name: "tif", type: "uint8" },
+      { name: "cloid", type: "uint128" },
+    ],
+    outputs: [{ name: "id", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "claimPurrBuy",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "id", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "canClaimBuy",
+    stateMutability: "view",
+    inputs: [{ name: "id", type: "uint256" }],
+    outputs: [{ type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "nextTradeId",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ type: "uint256" }],
   },
 ] as const;
 

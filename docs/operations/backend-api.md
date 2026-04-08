@@ -1,27 +1,31 @@
 # Backend API
 
-The FastAPI app in **`backend/server.py`** listens for **`Swap`** logs on **`WATCH_POOL`**, broadcasts decoded events, and optionally runs **Hyperliquid spot** rebalance logic when **`ENABLE_HL_TRADING`** is true. Configure with **`backend/.env`** (see **`backend/.env.example`** if present).
+The FastAPI app in **`backend/server.py`** streams **`Swap`** logs from **`WATCH_POOL`**, and (when **`HEDGE_ESCROW`** is set) polls **`HedgeEscrow`** + Core precompiles so the UI can show **claimable** hedges. **Hyperliquid API wallets / `Exchange` are not used** for hedge execution — orders are placed on-chain via **CoreWriter** inside **`HedgeEscrow.sol`**.
 
 ## HTTP
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Config snapshot: watched pool, trading flag, spot market, rebalance band, chain, token addresses, HL account (if set). |
-| `/events` | GET | Recent decoded swap events (`limit` query, capped). |
-| `/hl/spot_state` | GET | Hyperliquid **spot user state** when trading is enabled; otherwise `trading_disabled`. |
+| `/health` | GET | Pool, chain, optional **`hedgeEscrow`**, **`purrTokenIndex`**, poll interval. |
+| `/events` | GET | Recent decoded swap events (`limit`). |
+| `/escrow/trades` | GET | Snapshot of all escrow trades + **`canClaimBuy`** (requires **`HEDGE_ESCROW`** env). |
+| `/escrow/spot/{user}` | GET | Raw **`spotBalance`** precompile reads for USDC (`token 0`) and base token (if **`PURR_TOKEN_INDEX`** set — name is legacy; value is **Core token index** for the deployed base asset). |
 
 ## WebSocket
 
 | Path | Description |
 |------|-------------|
-| `/ws` | Client connection for broadcast stream (swap + debug events emitted from the listener). |
+| `/ws` | Swap events + **`escrow_claimable`** when claimability changes. |
 
-## Environment flags
+## Environment
 
-- **`ENABLE_HL_TRADING`** — When **true**, initializes Hyperliquid **`Exchange`** / **`Info`** and may place **spot** orders for ratio rebalance after swaps (requires **`HL_SECRET_KEY`**, **`HL_ACCOUNT_ADDRESS`**, etc.).
+See **`backend/.env.example`**. Important:
 
-- **`ALCHEMY_WS_URL`**, **`EVM_RPC_HTTP_URL`**, **`STRATEGIST_EVM_PRIVATE_KEY`**, **`SOVEREIGN_VAULT`**, **`USDC_ADDRESS`**, **`PURR_ADDRESS`**, **`WATCH_POOL`** — Required for the listener and health checks.
+- **`HEDGE_ESCROW`** — Deployed **`HedgeEscrow`** address.
+- **`PURR_TOKEN_INDEX`** — HyperCore **token index** for the **base** asset (PURR, WETH, etc.), not the perp universe id.
 
-Tune rebalance behavior with **`REBALANCE_BAND`**, **`MIN_HEDGE_USDC_MICRO`**, **`MAX_HEDGE_USDC_MICRO_PER_SWAP`**, **`HEDGE_COOLDOWN_MS`**, **`SPOT_MARKET`**.
+Tune **`ESCROW_POLL_INTERVAL_S`** (default **4**).
 
-See also [Current implementation — trading, fees, routing](../architecture/current-implementation.md) for how this relates to on-chain swaps.
+## Frontend
+
+Set **`NEXT_PUBLIC_HEDGE_ESCROW`** and **`NEXT_PUBLIC_BACKEND_URL`** (e.g. `http://127.0.0.1:8000`) for the **Hedge** tab.

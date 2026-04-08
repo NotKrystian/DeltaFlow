@@ -1,9 +1,9 @@
 # Current implementation (trading, fees, routing)
 
-This page describes **what the repository code does today**: **USDC / PURR** on HyperEVM, **balance-seeking** swap fees, and **vault ↔ HyperCore** USDC flows. It is the ground truth for `contracts/src` as maintained in Git.
+This page describes **what the repository code does today** on **HyperEVM**: **USDC** quoted against a **base spot asset** (the primary deployment uses **PURR**; the same contracts can target **WETH** with a separate deploy and correct spot indices / decimals). Swaps use **balance-seeking** fees and **vault ↔ HyperCore** USDC flows where applicable.
 
 {% hint style="info" %}
-Older marketing materials or README sections may still mention WETH, an eight-component quote engine, risk engine, or hedge FSM. Those modules are **not** present in the current Solidity tree unless explicitly reintroduced. When in doubt, trust this page and the contracts.
+Older marketing materials or README sections may still mention an eight-component quote engine, risk engine, or hedge FSM. Those modules are **not** present in the current Solidity tree unless explicitly reintroduced. Off-chain **API wallet** hedging is **not** the current backend path; see **Hedge escrow** below.
 {% endhint %}
 
 ---
@@ -12,10 +12,10 @@ Older marketing materials or README sections may still mention WETH, an eight-co
 
 1. **Execution path** — Users trade **on-chain** by calling **`SovereignPool.swap()`**. The frontend submits this via wallet (`useSwap` → pool address + ABI).
 
-2. **Pair** — **USDC** and **PURR** (the UI uses **6** decimals for USDC and **5** for PURR).
+2. **Pair** — Typically **USDC** + **base** (e.g. **PURR** with **5** decimals on testnet, or **WETH** with **18** decimals). The UI must match token decimals for the deployed pool.
 
 3. **Pricing** — Output amounts are **not** from constant-product reserves. **`SovereignALM`**:
-   - Reads **`PrecompileLib.normalizedSpotPx(spotIndexPURR)`** and derives **USDC per 1 PURR** (`getSpotPriceUSDCperPURR`).
+   - Reads **`PrecompileLib.normalizedSpotPx(spotIndex)`** for the configured market and derives **USDC per 1 base** (`getSpotPriceUSDCperPURR` — name is historical; math is USDC per base).
    - Computes **`amountOut`** from **`amountInMinusFee`** using spot math only.
    - **Reverts** if the **sovereign vault** cannot cover **`tokenOut`** plus a configured **liquidity buffer** (bps).
 
@@ -27,17 +27,19 @@ Older marketing materials or README sections may still mention WETH, an eight-co
 
 ## How fees are composed
 
-On-chain fees are **not** the multi-named “DeltaFlow” eight-component model in legacy docs. They come from **`BalanceSeekingSwapFeeModuleV3`** (`SwapFeeModuleV3.sol`) when wired as the pool’s swap fee module; otherwise the pool uses its **default fee in bips**.
+On-chain fees come from **`BalanceSeekingSwapFeeModuleV3`** (`SwapFeeModuleV3.sol`) when wired as the pool’s swap fee module; otherwise the pool uses its **default fee in bips**.
 
 When the fee module is active, **`getSwapFeeInBips`** roughly:
 
-1. **Liquidity check** — Estimates output at spot and **reverts** if the vault cannot pay **`tokenOut`** (with buffer), similar in spirit to the ALM check.
+1. **Liquidity check** — Estimates output at spot and **reverts** if the vault cannot pay **`tokenOut`** (with buffer).
 
-2. **Imbalance component** — Reads vault **USDC (U)** and **PURR (P)** balances, derives spot **S** (USDC per PURR), compares value of both sides at spot, and measures **absolute deviation in bps** relative to the “balanced” side.
+2. **Imbalance component** — Reads vault **USDC** and **base** balances, derives spot **S** (USDC per base), compares value of both sides at spot, and measures **absolute deviation in bps**.
 
 3. **Fee formula** — **`feeAddBps = deviationBps / 10`** (steps of **0.1%** of that deviation), then **`fee = baseFeeBips + feeAddBps`**, **clamped** to **`[minFeeBips, maxFeeBips]`**.
 
-The **pool** converts **`feeInBips`** into **`amountInWithoutFee`**, passes that to the ALM, and settles **`effectiveFee`** in **`tokenIn`** with rounding rules as implemented in **`SovereignPool.swap`**.
+The **pool** converts **`feeInBips`** into **`amountInWithoutFee`**, passes that to the ALM, and settles **`effectiveFee`** in **`tokenIn`**.
+
+**Decimals:** The fee module should use the **base token’s** `decimals()` for imbalance math (see [pairs and deployment](../deployment/pairs-and-scripts.md)).
 
 ---
 
@@ -46,7 +48,8 @@ The **pool** converts **`feeInBips`** into **`amountInWithoutFee`**, passes that
 | Layer | Behavior |
 |-------|------------|
 | **Pool / users** | Trades are **EVM transactions** (`swap`). No Hyperliquid CEX order is required for the user’s swap. |
-| **Backend** (`server.py`) | Subscribes to **`Swap`** logs on **`WATCH_POOL`**. If **`ENABLE_HL_TRADING`** is **true**, it may send **Hyperliquid spot** orders (SDK `Exchange` / L2) on the configured **`SPOT_MARKET`** (e.g. PURR/USDC) to **rebalance** inventory vs a **mid** and **`REBALANCE_BAND`**. If **`ENABLE_HL_TRADING`** is **false**, it only records and broadcasts — **no** off-chain hedge trade. |
+| **Backend** (`server.py`) | Subscribes to **`Swap`** logs, serves **`/escrow/trades`** when **`HEDGE_ESCROW`** is set — **no** HL API order execution. |
+| **Hedge escrow** | Users call **`HedgeEscrow.openBuyPurrWithUsdc`** on-chain (name is PURR-centric; contract uses the **base** token configured at deploy); orders are sent via **CoreWriter** only. |
 
 There is **no** on-chain **`HedgeExecutor`** or hedge FSM in the current **`contracts/src`** snapshot.
 
@@ -71,10 +74,23 @@ If the pool must pay USDC from the vault and **EVM USDC balance is insufficient*
 
 ### LP accounting
 
-- **`getReserves()`** — USDC reserve includes **EVM USDC + `totalAllocatedUSDC`**; PURR is **EVM balance**.
+- **`getReserves()`** — USDC reserve includes **EVM USDC + `totalAllocatedUSDC`**; the **base** token reserve is **EVM balance**.
 - **`getReservesForPool`** — USDC side can also reflect **HyperCore spot USDC** via **`PrecompileLib.spotBalance`** for reserve views.
 
-**PURR** in this design is primarily **ERC-20 on EVM** in the vault; **USDC** is the asset that **bridges** through CoreWriter-style flows.
+**USDC** is the asset that **bridges** through CoreWriter-style flows; the **base** asset is primarily **ERC-20 on EVM** in the vault.
+
+---
+
+## Hedge escrow (CoreWriter, no API wallet execution)
+
+Optional flow for **spot hedges** that must hit **HyperCore** via the system contract `0x3333…3333`:
+
+- **`contracts/src/HedgeEscrow.sol`** — User approves USDC, calls `openBuyPurrWithUsdc`; the contract **`bridgeToCore`** then **`CoreWriterLib.placeLimitOrder`**. Claims bridge **`purr`** IERC20 (the **base** token at construction) back to EVM. No Hyperliquid `Exchange` / API wallet is involved in execution.
+- **`backend/server.py`** — Polls the escrow contract’s **`canClaimBuy`** view and **`trades`** mapping (plus optional raw **`spotBalance`** precompile reads). Exposes **`GET /escrow/trades`** for the frontend. **Does not** submit HL API orders.
+
+### Perp asset id vs spot limit-order asset id
+
+Do **not** confuse **perp universe** ids (e.g. PURR = **125** in `meta`) with the **`asset`** field passed to **`placeLimitOrder`**. For **spot** books, Hyperliquid uses **`asset = 10000 + spotIndex`**, where **`spotIndex`** is the pair’s index in **`spotMeta.universe`**. Deploy scripts **`DeployHedgeEscrow.s.sol`** and optional **`DeployAll`** with **`DEPLOY_HEDGE_ESCROW=true`** compute **`spotAssetIndex`** this way. Backend **`PURR_TOKEN_INDEX`** must be the **Core token index** for the **base** EVM token (from **`PrecompileLib.getTokenIndex(base)`**), **not** the perp id.
 
 ---
 
@@ -84,4 +100,9 @@ If the pool must pay USDC from the vault and **EVM USDC balance is insufficient*
 - `contracts/src/SovereignALM.sol` — spot quote and vault liquidity check.
 - `contracts/src/SwapFeeModuleV3.sol` — balance-seeking fee in bips.
 - `contracts/src/SovereignVault.sol` — LP, Core bridge/allocate, `sendTokensToRecipient`.
-- `backend/server.py` — swap log listener, optional HL spot rebalance.
+- `contracts/src/HedgeEscrow.sol` — CoreWriter limit orders + `claimPurrBuy`.
+- `backend/server.py` — swap log listener + escrow status polling.
+- `contracts/script/DeployHedgeEscrow.s.sol` — standalone **`HedgeEscrow`** deploy with precompile-derived indices.
+- `contracts/script/DeployAll.s.sol` — full PURR stack; optional **`SKIP_HL_AGENT`**, **`DEPLOY_HEDGE_ESCROW`**, and (when added) **`DEPLOY_USDC_WETH`** for a second USDC/WETH stack.
+
+See also [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).

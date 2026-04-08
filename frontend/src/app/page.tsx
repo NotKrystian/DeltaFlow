@@ -5,8 +5,10 @@ import SwapCard from "./components/SwapCard";
 import AddLiquidityCard from "./components/AddLiquidityCard";
 import RemoveLiquidityCard from "./components/RemoveLiquidityCard";
 import StrategistCard from "./components/StrategistCard";
+import EscrowClaimsCard from "./components/EscrowClaimsCard";
+import HedgeOpenCard from "./components/HedgeOpenCard";
 
-type Tab = "swap" | "add" | "remove" | "debug";
+type Tab = "swap" | "add" | "remove" | "escrow" | "debug";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState<Tab>("swap");
@@ -25,11 +27,11 @@ export default function Home() {
         {/* Tabs + Content (shared width) */}
         <div className="w-full flex justify-center">
           <div
-            className={`w-full ${activeTab === "debug" ? "max-w-[700px]" : "max-w-[500px]"}`}
+            className={`w-full ${activeTab === "debug" || activeTab === "escrow" ? "max-w-[700px]" : "max-w-[500px]"}`}
           >
             {/* Tabs */}
             <div className="flex gap-2 p-1 bg-[var(--card)] rounded-2xl border border-[var(--border)] mb-6">
-              {(["swap", "add", "remove", "debug"] as const).map((tab) => (
+              {(["swap", "add", "remove", "escrow", "debug"] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
@@ -45,7 +47,9 @@ export default function Home() {
                       ? "Add"
                       : tab === "remove"
                         ? "Remove"
-                        : "Strategist"}
+                        : tab === "escrow"
+                          ? "Hedge"
+                          : "Strategist"}
                 </button>
               ))}
             </div>
@@ -54,6 +58,12 @@ export default function Home() {
             {activeTab === "swap" && <SwapCard />}
             {activeTab === "add" && <AddLiquidityCard />}
             {activeTab === "remove" && <RemoveLiquidityCard />}
+            {activeTab === "escrow" && (
+              <div className="space-y-8 w-full">
+                <HedgeOpenCard />
+                <EscrowClaimsCard />
+              </div>
+            )}
             {activeTab === "debug" && <StrategistCard />}
           </div>
         </div>

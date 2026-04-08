@@ -97,6 +97,10 @@ PURR=0xa9056c15938f9aff34cd497c722ce33db0c2fd57
 REBALANCE_BAND=0.015
 HL_AGENT_NAME=insert-name
 INVERT_PURR_PX=false
+SPOT_INDEX_PURR=
+# Optional; default 1e8 — must match SovereignALM / fee module (`PrecompileLib.normalizedSpotPx` scale)
+RAW_PX_SCALE=100000000
+# Optional second pair in one broadcast: DEPLOY_USDC_WETH=true plus WETH, SPOT_INDEX_WETH, INVERT_WETH_PX
 ENABLE_HL_TRADING=true
 HL_SECRET_KEY=
 HL_ACCOUNT_ADDRESS=

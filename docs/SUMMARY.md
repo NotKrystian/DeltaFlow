@@ -14,6 +14,10 @@
 
 * [Contracts](protocol/contracts.md)
 
+## Deployment
+
+* [Pairs and deployment scripts](deployment/pairs-and-scripts.md)
+
 ## Operations
 
 * [Backend API](operations/backend-api.md)
