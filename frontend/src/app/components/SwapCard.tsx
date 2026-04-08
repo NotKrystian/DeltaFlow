@@ -23,9 +23,8 @@ export { TOKENS };
 
 // Hard-set to your deployed pool
 
-// Fallback fee module if pool.swapFeeModule() is zero
-const SWAP_FEE_MODULE_FALLBACK =
-  "0xA0Fa62675a8Db6814510eEF716c67021F249a5d6" as const;
+// Fallback if pool.swapFeeModule() is zero — matches `NEXT_PUBLIC_SWAP_FEE_MODULE`
+const SWAP_FEE_MODULE_FALLBACK = ADDRESSES.SWAP_FEE_MODULE;
 
 // --- Debug ABIs ---
 const DECIMALS_ABI = [

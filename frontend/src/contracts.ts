@@ -5,25 +5,41 @@
 // Chain ID for Hyperliquid Testnet
 export const HYPERLIQUID_TESTNET_CHAIN_ID = 998;
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Contract Addresses
-// ═══════════════════════════════════════════════════════════════════════════
+const ZERO = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+
+// Defaults match Hyperliquid testnet; override with NEXT_PUBLIC_* after `forge script DeployAll`.
+// See deploy/testnet.env.example and docs/deployment/testnet-asset-ids.md
 export const ADDRESSES = {
-  // Core Contracts - Hyperliquid Testnet
-  POOL: "0x2E5bB169b596b3136C717258b40D6F83Ae5393Fd" as const, // TODO: Deploy pool
-  VAULT: "0x715EB367788e71C4c6aee4E8994aD407807fec27" as const, // SovereignVault
-  ALM: "0x773ACA23c3B9E9EB8e7BD27Da3863957B66e9526" as const, // TODO: Deploy ALM
+  POOL: (process.env.NEXT_PUBLIC_POOL ??
+    "0x2E5bB169b596b3136C717258b40D6F83Ae5393Fd") as `0x${string}`,
+  VAULT: (process.env.NEXT_PUBLIC_VAULT ??
+    "0x715EB367788e71C4c6aee4E8994aD407807fec27") as `0x${string}`,
+  ALM: (process.env.NEXT_PUBLIC_ALM ??
+    "0x773ACA23c3B9E9EB8e7BD27Da3863957B66e9526") as `0x${string}`,
 
-  // Tokens
-  USDC: "0x2B3370eE501B4a559b57D449569354196457D8Ab" as const, // Hyperliquid Testnet USDC
-  PURR: "0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57" as const, // PURR Token
+  SWAP_FEE_MODULE: (process.env.NEXT_PUBLIC_SWAP_FEE_MODULE ??
+    "0xA0Fa62675a8Db6814510eEF716c67021F249a5d6") as `0x${string}`,
 
-  // HyperCore
+  USDC: "0x2B3370eE501B4a559b57D449569354196457D8Ab" as const,
+  PURR: "0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57" as const,
+  WETH: (process.env.NEXT_PUBLIC_WETH ??
+    "0x5a1A1339ad9e52B7a4dF78452D5c18e8690746f3") as `0x${string}`,
+
   HLP_VAULT: "0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0" as const,
 
-  /** CoreWriter hedge escrow — set `NEXT_PUBLIC_HEDGE_ESCROW` after deploy */
-  HEDGE_ESCROW: (process.env.NEXT_PUBLIC_HEDGE_ESCROW ??
-    "0x0000000000000000000000000000000000000000") as `0x${string}`,
+  HEDGE_ESCROW: (process.env.NEXT_PUBLIC_HEDGE_ESCROW ?? ZERO) as `0x${string}`,
+
+  FEE_SURPLUS: (process.env.NEXT_PUBLIC_FEE_SURPLUS ?? ZERO) as `0x${string}`,
+  DELTAFLOW_RISK_ENGINE: (process.env.NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE ?? ZERO) as `0x${string}`,
+
+  /** Optional second stack (USDC/WETH) when `DEPLOY_USDC_WETH=true` — primary UI uses POOL/VAULT/ALM above */
+  POOL_WETH: (process.env.NEXT_PUBLIC_POOL_WETH ?? ZERO) as `0x${string}`,
+  VAULT_WETH: (process.env.NEXT_PUBLIC_VAULT_WETH ?? ZERO) as `0x${string}`,
+  ALM_WETH: (process.env.NEXT_PUBLIC_ALM_WETH ?? ZERO) as `0x${string}`,
+  SWAP_FEE_MODULE_WETH: (process.env.NEXT_PUBLIC_SWAP_FEE_MODULE_WETH ?? ZERO) as `0x${string}`,
+  FEE_SURPLUS_WETH: (process.env.NEXT_PUBLIC_FEE_SURPLUS_WETH ?? ZERO) as `0x${string}`,
+  DELTAFLOW_RISK_ENGINE_WETH: (process.env.NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE_WETH ??
+    ZERO) as `0x${string}`,
 } as const;
 
 // ═══════════════════════════════════════════════════════════════════════════

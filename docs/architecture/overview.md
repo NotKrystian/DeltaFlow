@@ -6,13 +6,34 @@
 
 DeltaFlow is designed around **spot-index pricing**, **vault-held liquidity**, and **HyperCore** connectivity on **HyperEVM**. Deployments can target **USDC/PURR**, **USDC/WETH**, or other USDC/base pairs using the same contract family with separate deploys (see [Pairs and deployment scripts](../deployment/pairs-and-scripts.md)).
 
+```mermaid
+flowchart LR
+  subgraph evm [HyperEVM]
+    U[User / wallet]
+    P[SovereignPool]
+    A[SovereignALM]
+    F[Swap fee module]
+    V[SovereignVault]
+    U --> P
+    P --> F
+    P --> A
+    P --> V
+  end
+  subgraph core [HyperCore]
+    PC[Precompiles / CoreWriter]
+  end
+  A --> PC
+  V --> PC
+```
+
 ## On-chain (HyperEVM) — present in this repo
 
 | Layer | Role |
 |--------|------|
 | **SovereignPool** | Valantis-style pool: swap routing, swap fee module, ALM quote, vault token flows. |
 | **SovereignALM** | Quotes **USDC vs base** from the Hyperliquid **spot index** (`PrecompileLib`); enforces vault liquidity for `tokenOut`. |
-| **BalanceSeekingSwapFeeModuleV3** | Optional `ISwapFeeModule`: **base fee + imbalance** vs spot-valued inventory, clamped to min/max bips. |
+| **DeltaFlowCompositeFeeModule** + **FeeSurplus** + **DeltaFlowRiskEngine** | Default in **`DeployAll`** when **`DEPLOY_DELTAFLOW_FEE=true`**: multi-component fee + surplus routing + risk gate. |
+| **BalanceSeekingSwapFeeModuleV3** | Alternative `ISwapFeeModule` when **`DEPLOY_DELTAFLOW_FEE=false`**: **base fee + imbalance** vs spot-valued inventory. |
 | **SovereignVault** | LP token (`DFLP`), deposits/withdrawals, **USDC** bridge/allocate/deallocate via **CoreWriter**, `sendTokensToRecipient` for swaps. |
 | **HedgeEscrow** (optional) | CoreWriter limit orders + claim; **no** API wallet execution. |
 
@@ -29,4 +50,4 @@ Oracle, mark, BBO, spot balance, and **CoreWriter** precompiles sit under Hyperl
 
 ## Roadmap / extended design
 
-A fuller design can add separate **risk**, **multi-component quote**, **circuit breaker**, and **on-chain hedge FSM** contracts. Those are **not** in the default tree — see [current implementation](current-implementation.md).
+Additional modules (for example **circuit breaker** or a fuller **on-chain hedge FSM**) may be layered beside the default stack; the **DeltaFlow** fee and risk contracts under `contracts/src/deltaflow/` are the current multi-component fee path — see [current implementation](current-implementation.md).

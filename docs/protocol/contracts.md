@@ -3,11 +3,24 @@
 Deploy scripts live under `contracts/script/`:
 
 - **`AmmDeployBase.s.sol`** — Shared deploy logic for one USDC/base market (used by the scripts below).
-- **`DeployAll.s.sol`** — **USDC/PURR** stack; optional **`DEPLOY_USDC_WETH`** adds a second **USDC/WETH** stack in the same broadcast. Env: **`SKIP_HL_AGENT`**, **`DEPLOY_HEDGE_ESCROW`**, **`RAW_PX_SCALE`**, pair-specific **`INVERT_*_PX`**. See [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).
+- **`DeployAll.s.sol`** — **USDC/PURR** stack; optional **`DEPLOY_USDC_WETH`** adds a second **USDC/WETH** stack in the same broadcast. Env: **`SKIP_HL_AGENT`**, **`DEPLOY_HEDGE_ESCROW`**, **`DEPLOY_DELTAFLOW_FEE`**, **`RAW_PX_SCALE`**, pair-specific **`INVERT_*_PX`**. See [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).
 - **`DeployUsdcWeth.s.sol`** — Single **USDC/WETH** stack only (`WETH`, `SPOT_INDEX_WETH`, `INVERT_WETH_PX`, optional `RAW_PX_SCALE_WETH`).
 - **`DeployHedgeEscrow.s.sol`** — Standalone **`HedgeEscrow`** with `spotAssetIndex = 10000 + spotIndex`.
 
-Exact constructor wiring matches **`SovereignALM`** + **`BalanceSeekingSwapFeeModuleV3`** (`rawPxScale`, `rawIsPurrPerUsdc`); see [Current implementation](../architecture/current-implementation.md).
+Constructor wiring for **`SovereignALM`** uses **`rawPxScale`** / **`rawIsPurrPerUsdc`**; the default fee path uses **`DeltaFlowCompositeFeeModule`** with matching price inputs. See [Current implementation](../architecture/current-implementation.md).
+
+```mermaid
+flowchart LR
+  subgraph market [One USDC/base market]
+    SP[SovereignPool]
+    SV[SovereignVault]
+    SA[SovereignALM]
+    DF[DeltaFlowCompositeFeeModule or V3 fee module]
+    SP --- SV
+    SP --- SA
+    SP --- DF
+  end
+```
 
 ## Core (this repo)
 
@@ -17,7 +30,9 @@ Exact constructor wiring matches **`SovereignALM`** + **`BalanceSeekingSwapFeeMo
 
 ## Swap fees
 
-- **BalanceSeekingSwapFeeModuleV3** (`SwapFeeModuleV3.sol`) — Implements **`ISwapFeeModule`**: **base + imbalance** fee in bips; **base `decimals()`** and **`rawPxScale` / inversion** match **`SovereignALM`**.
+- **DeltaFlowCompositeFeeModule** (`contracts/src/deltaflow/`) — Default when **`DEPLOY_DELTAFLOW_FEE=true`**: **`ISwapFeeModule`** implementation composed with **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, and **`DeltaFlowFeeMath`** parameters (`DF_*` env).
+
+- **BalanceSeekingSwapFeeModuleV3** (`SwapFeeModuleV3.sol`) — Used when **`DEPLOY_DELTAFLOW_FEE=false`**: **base + imbalance** fee in bips; **base `decimals()`** and **`rawPxScale` / inversion** match **`SovereignALM`**.
 
 If no fee module is configured, the pool uses its **default swap fee bips** (see `SovereignPool`).
 
@@ -27,4 +42,4 @@ If no fee module is configured, the pool uses its **default swap fee bips** (see
 
 ## Source of truth
 
-ABIs and bytecode: **`contracts/src/`** and Foundry **`out/`**. Runtime addresses: deployment records and **`NEXT_PUBLIC_*`** / backend `.env` variables.
+ABIs and bytecode: **`contracts/src/`** and Foundry **`out/`**. Runtime addresses: deployment records, **`frontend/.env.example`** (**`NEXT_PUBLIC_*`**), **`backend/.env.example`**, and [`deploy/testnet.env.example`](../../deploy/testnet.env.example) for forge. Indices and asset ids: [Testnet asset IDs](../deployment/testnet-asset-ids.md).

@@ -4,40 +4,22 @@ import { useReadContract, useReadContracts } from "wagmi";
 import { CONTRACTS, ALM_ABI, POOL_ABI, ERC20_ABI } from "../lib/contracts";
 import { formatUnits } from "viem";
 
-// Hook to get the current spot price from the ALM
+// Spot price from ALM (USDC per 1 base, scaled per `rawPxScale` on-chain)
 export function useSpotPrice() {
   const { data, isLoading, error, refetch } = useReadContract({
     address: CONTRACTS.ALM,
     abi: ALM_ABI,
-    functionName: "getSpotPrice",
+    functionName: "getSpotPriceUSDCperPURR",
   });
 
-  // Price comes with 8 decimals, but raw - needs szDecimals multiplication
-  // For PURR with szDecimals=0, the price IS the normalized price
   const rawPrice = data ? BigInt(data) : BigInt(0);
 
   return {
     rawPrice,
-    // Assuming szDecimals=0 for PURR, price is already normalized
     formattedPrice: rawPrice ? Number(rawPrice) / 1e8 : 0,
     isLoading,
     error,
     refetch,
-  };
-}
-
-// Hook to get token0 info from the ALM
-export function useToken0Info() {
-  const { data, isLoading, error } = useReadContract({
-    address: CONTRACTS.ALM,
-    abi: ALM_ABI,
-    functionName: "getToken0Info",
-  });
-
-  return {
-    tokenInfo: data,
-    isLoading,
-    error,
   };
 }
 

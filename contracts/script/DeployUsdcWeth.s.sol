@@ -18,7 +18,7 @@ contract DeployUsdcWeth is AmmDeployBase {
         console2.log("DeployUsdcWeth deployer:", p.deployer);
 
         vm.startBroadcast(p.pk);
-        _deployOneStack(p, hedge, "USDC/WETH");
+        _deployOneStack(p, hedge, "USDC/WETH", true);
         vm.stopBroadcast();
     }
 }

@@ -19,13 +19,16 @@ contract DeployAll is AmmDeployBase {
 
         vm.startBroadcast(p.pk);
 
-        _deployOneStack(p, hedge, "USDC/PURR");
+        _deployOneStack(p, hedge, "USDC/PURR", false);
 
         if (wethToo) {
             Params memory w = _loadWethParams(p);
-            _deployOneStack(w, hedge, "USDC/WETH");
+            _deployOneStack(w, hedge, "USDC/WETH", true);
         }
 
         vm.stopBroadcast();
+
+        console2.log("--- post-deploy: sync env files (addresses) ---");
+        console2.log("python3 scripts/sync_env_from_broadcast.py   # merges broadcast/.../run-latest.json into frontend/.env.local + backend/.env");
     }
 }

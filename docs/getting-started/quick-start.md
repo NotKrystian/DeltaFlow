@@ -2,6 +2,15 @@
 
 Prerequisites: **Foundry**, **Node.js ≥ 18**, **Python ≥ 3.10**.
 
+**Target chain:** Hyperliquid **testnet** HyperEVM (**998**). Use [`deploy/testnet.env.example`](../../deploy/testnet.env.example) as the forge env template and [Testnet asset IDs](../deployment/testnet-asset-ids.md) for indices.
+
+```mermaid
+flowchart TD
+  A[forge script DeployAll] --> B[Broadcast contracts]
+  B --> C[Copy NEXT_PUBLIC_* to frontend]
+  B --> D[Copy SOVEREIGN_VAULT / WATCH_POOL to backend]
+```
+
 ## 1. Clone and backend env
 
 ```bash
@@ -19,6 +28,8 @@ forge build --force
 
 ## 3. Deploy (Hyperliquid testnet)
 
+Copy [`deploy/testnet.env.example`](../../deploy/testnet.env.example) to the repo root as **`.env`** (or export vars). Fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex`](../../contracts/script/ReadSpotIndex.s.sol)), and optional DeltaFlow / V3 fee knobs. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (DeltaFlow composite fee module + surplus + risk engine).
+
 **USDC / PURR (full AMM stack):**
 
 ```bash
@@ -28,6 +39,8 @@ forge script contracts/script/DeployAll.s.sol:DeployAll \
 ```
 
 Set env vars as required by `DeployAll` (`PRIVATE_KEY`, `USDC`, `PURR`, `POOL_MANAGER`, `SPOT_INDEX_PURR`, `INVERT_PURR_PX`, fee bips, etc.). Optional: `SKIP_HL_AGENT=true`, `DEPLOY_HEDGE_ESCROW=true`, `RAW_PX_SCALE` (defaults to `1e8`), `DEPLOY_USDC_WETH=true` plus `WETH`, `SPOT_INDEX_WETH`, `INVERT_WETH_PX` for a second stack in one broadcast.
+
+After **`--broadcast`**, run **`./scripts/deploy_all_testnet.sh`** (deploy + sync) or **`python3 scripts/sync_env_from_broadcast.py`** to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from `broadcast/DeployAll.s.sol/998/run-latest.json` (set **`RPC_URL`** so `cast` can fill **`PURR_TOKEN_INDEX`** when HedgeEscrow is deployed).
 
 **HedgeEscrow only:**
 

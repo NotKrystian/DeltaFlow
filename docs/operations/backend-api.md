@@ -2,6 +2,17 @@
 
 The FastAPI app in **`backend/server.py`** streams **`Swap`** logs from **`WATCH_POOL`**, and (when **`HEDGE_ESCROW`** is set) polls **`HedgeEscrow`** + Core precompiles so the UI can show **claimable** hedges. **Hyperliquid API wallets / `Exchange` are not used** for hedge execution — orders are placed on-chain via **CoreWriter** inside **`HedgeEscrow.sol`**.
 
+```mermaid
+flowchart LR
+  RPC[EVM RPC + Alchemy WSS]
+  S[server.py]
+  P[(WATCH_POOL)]
+  E[HedgeEscrow optional]
+  RPC --> S
+  S --> P
+  S --> E
+```
+
 ## HTTP
 
 | Endpoint | Method | Description |

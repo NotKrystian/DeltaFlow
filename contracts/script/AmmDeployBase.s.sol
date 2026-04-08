@@ -13,6 +13,12 @@ import {BalanceSeekingSwapFeeModuleV3} from "../src/SwapFeeModuleV3.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 import {HedgeEscrow} from "../src/HedgeEscrow.sol";
 
+import {DeltaFlowRiskPolicy} from "../src/deltaflow/DeltaFlowTypes.sol";
+import {DeltaFlowFeeMath} from "../src/deltaflow/DeltaFlowFeeMath.sol";
+import {DeltaFlowRiskEngine} from "../src/deltaflow/DeltaFlowRiskEngine.sol";
+import {DeltaFlowCompositeFeeModule} from "../src/deltaflow/DeltaFlowCompositeFeeModule.sol";
+import {FeeSurplus} from "../src/deltaflow/FeeSurplus.sol";
+
 interface ISovereignVaultAgentApprover {
     function approveAgent(address agent, string calldata name) external;
 }
@@ -39,6 +45,11 @@ abstract contract AmmDeployBase is Script {
         uint256 maxFeeBips;
         uint256 liquidityBufferBps;
         bool skipHlAgent;
+        /// @dev DeltaFlow composite fee: `type(uint32).max` skips perp reads.
+        uint32 dfPerpIndex;
+        /// @dev BBO asset id for spread check; 0 = `10000 + spotIndex`.
+        uint32 dfSpotAssetBbo;
+        uint256 dfCapacityWad;
     }
 
     function _loadCommon() internal view returns (Params memory p) {
@@ -93,27 +104,67 @@ abstract contract AmmDeployBase is Script {
         p.spotIndexPURR = uint64(vm.envUint("SPOT_INDEX_PURR"));
         p.rawIsPurrPerUsdc = vm.envBool("INVERT_PURR_PX");
         p.rawPxScale = vm.envOr("RAW_PX_SCALE", uint256(100_000_000));
+
+        p.dfPerpIndex = uint32(vm.envOr("PERP_INDEX_PURR", uint256(type(uint32).max)));
+        p.dfSpotAssetBbo = uint32(vm.envOr("SPOT_ASSET_BBO_PURR", uint256(0)));
+        p.dfCapacityWad = vm.envOr("CAPACITY_WAD_PURR", uint256(1_000 ether));
+
         _validateParams(p);
     }
 
-    /// @dev Second stack in `DeployAll` when `DEPLOY_USDC_WETH=true`; reuses fee/pool env from `common`.
     function _loadWethParams(Params memory common) internal view returns (Params memory w) {
         w = common;
         w.purr = vm.envAddress("WETH");
         w.spotIndexPURR = uint64(vm.envUint("SPOT_INDEX_WETH"));
         w.rawIsPurrPerUsdc = vm.envBool("INVERT_WETH_PX");
         w.rawPxScale = vm.envOr("RAW_PX_SCALE_WETH", common.rawPxScale);
+
+        w.dfPerpIndex = uint32(vm.envOr("PERP_INDEX_WETH", uint256(type(uint32).max)));
+        w.dfSpotAssetBbo = uint32(vm.envOr("SPOT_ASSET_BBO_WETH", uint256(0)));
+        w.dfCapacityWad = vm.envOr("CAPACITY_WAD_WETH", common.dfCapacityWad);
+
         _validateParams(w);
     }
 
-    /// @dev Standalone WETH deploy: same common env as DeployAll, pair from `WETH` / `SPOT_INDEX_WETH` / `INVERT_WETH_PX`.
     function _loadWethOnly() internal view returns (Params memory p) {
         p = _loadCommon();
         p.purr = vm.envAddress("WETH");
         p.spotIndexPURR = uint64(vm.envUint("SPOT_INDEX_WETH"));
         p.rawIsPurrPerUsdc = vm.envBool("INVERT_WETH_PX");
         p.rawPxScale = vm.envOr("RAW_PX_SCALE_WETH", vm.envOr("RAW_PX_SCALE", uint256(100_000_000)));
+
+        p.dfPerpIndex = uint32(vm.envOr("PERP_INDEX_WETH", uint256(type(uint32).max)));
+        p.dfSpotAssetBbo = uint32(vm.envOr("SPOT_ASSET_BBO_WETH", uint256(0)));
+        p.dfCapacityWad = vm.envOr("CAPACITY_WAD_WETH", uint256(1_000 ether));
+
         _validateParams(p);
+    }
+
+    function _riskPolicyFromEnv() internal view returns (DeltaFlowRiskPolicy memory pol) {
+        pol.capacityWad = vm.envOr("DF_POLICY_CAPACITY_WAD", uint256(0));
+        pol.navSoftWad = vm.envOr("DF_NAV_SOFT_WAD", uint256(0));
+        pol.navWarnWad = vm.envOr("DF_NAV_WARN_WAD", uint256(0));
+        pol.navHardWad = vm.envOr("DF_NAV_HARD_WAD", uint256(0));
+        pol.maxShortfallWad = vm.envOr("DF_MAX_SHORTFALL_WAD", type(uint256).max);
+        pol.maxSpreadBps = vm.envOr("DF_MAX_SPREAD_BPS", uint256(500));
+        pol.minSurplusUsdcNewRisk = vm.envOr("DF_MIN_SURPLUS_USDC_NEW_RISK", uint256(0));
+        pol.rawFeeRejectBps = vm.envOr("DF_RAW_FEE_REJECT_BPS", uint256(80));
+        pol.displayedFeeCapBps = vm.envOr("DF_DISPLAYED_FEE_CAP_BPS", uint256(60));
+        pol.requirePositiveSurplusTrend = vm.envOr("DF_REQUIRE_SURPLUS_TREND", false);
+    }
+
+    function _feeParamsFromEnv() internal view returns (DeltaFlowFeeMath.FeeParams memory fp) {
+        fp.execPerpBps = vm.envOr("DF_EXEC_PERP_BPS", uint256(4));
+        fp.execSpotShortfallBps = vm.envOr("DF_EXEC_SPOT_SHORTFALL_BPS", uint256(7));
+        fp.delayNormalBps = vm.envOr("DF_DELAY_NORMAL_BPS", uint256(2));
+        fp.delayStressedBps = vm.envOr("DF_DELAY_STRESSED_BPS", uint256(5));
+        fp.basisMaxBps = vm.envOr("DF_BASIS_MAX_BPS", uint256(5));
+        fp.fundingCapBps = vm.envOr("DF_FUNDING_CAP_BPS", uint256(8));
+        fp.invKappaWad = vm.envOr("DF_INV_KAPPA_WAD", uint256(24e17));
+        fp.exhaustLinearWad = vm.envOr("DF_EXHAUST_LINEAR_WAD", uint256(12e18));
+        fp.exhaustQuadWad = vm.envOr("DF_EXHAUST_QUAD_WAD", uint256(80e18));
+        fp.safetyBaseBps = vm.envOr("DF_SAFETY_BASE_BPS", uint256(2));
+        fp.delayStressed = vm.envOr("DF_DELAY_STRESSED", false);
     }
 
     function _deployPool(Params memory p, address vaultAddr) internal returns (SovereignPool pool) {
@@ -134,7 +185,7 @@ abstract contract AmmDeployBase is Script {
         pool = new SovereignPool(args);
     }
 
-    function _deployFeeModule(Params memory p, SovereignPool pool)
+    function _deployFeeModuleV3(Params memory p, SovereignPool pool)
         internal
         returns (BalanceSeekingSwapFeeModuleV3 feeModule)
     {
@@ -152,12 +203,62 @@ abstract contract AmmDeployBase is Script {
         );
     }
 
-    function _deployOneStack(Params memory p, bool deployHedge, string memory label) internal {
+    /// @dev If `DEPLOY_DELTAFLOW_FEE` is true (default), deploys FeeSurplus + RiskEngine + Composite fee module.
+    function _deployFeeStack(Params memory p, SovereignPool pool, address strategist)
+        internal
+        returns (address feeModule, address surplus, address riskEngine)
+    {
+        bool deployDf = vm.envOr("DEPLOY_DELTAFLOW_FEE", true);
+        if (!deployDf) {
+            BalanceSeekingSwapFeeModuleV3 v3 = _deployFeeModuleV3(p, pool);
+            return (address(v3), address(0), address(0));
+        }
+
+        FeeSurplus fs = new FeeSurplus(p.usdc, strategist);
+        DeltaFlowRiskPolicy memory pol = _riskPolicyFromEnv();
+        DeltaFlowRiskEngine risk = new DeltaFlowRiskEngine(
+            pol,
+            fs,
+            vm.envOr("DF_REQUIRE_SURPLUS_NEW_RISK", false),
+            strategist
+        );
+
+        DeltaFlowFeeMath.FeeParams memory fp = _feeParamsFromEnv();
+        uint32 spotBbo = p.dfSpotAssetBbo;
+        if (spotBbo == 0) {
+            spotBbo = uint32(uint256(10000) + uint256(p.spotIndexPURR));
+        }
+
+        DeltaFlowCompositeFeeModule comp = new DeltaFlowCompositeFeeModule(
+            address(pool),
+            p.usdc,
+            p.purr,
+            p.spotIndexPURR,
+            p.rawPxScale,
+            p.rawIsPurrPerUsdc,
+            p.dfPerpIndex,
+            spotBbo,
+            p.dfCapacityWad,
+            risk,
+            fs,
+            vm.envOr("SURPLUS_FRACTION_BPS", uint256(1000)),
+            fp,
+            vm.envOr("VOLATILE_REGIME", false)
+        );
+
+        fs.setPool(address(pool));
+
+        return (address(comp), address(fs), address(risk));
+    }
+
+    function _deployOneStack(Params memory p, bool deployHedge, string memory label, bool isWethStack) internal {
         console2.log("==========", label, "==========");
         console2.log("Base token:", p.purr);
         console2.log("USDC:", p.usdc);
         console2.log("Spot index:", p.spotIndexPURR);
         console2.log("RAW_PX_SCALE:", p.rawPxScale);
+
+        address strategist = vm.envOr("STRATEGIST", p.deployer);
 
         SovereignVault vault = new SovereignVault(p.usdc, p.purr);
         console2.log("SovereignVault:", address(vault));
@@ -185,19 +286,30 @@ abstract contract AmmDeployBase is Script {
         );
         console2.log("SovereignALM:", address(alm));
 
-        BalanceSeekingSwapFeeModuleV3 feeModule = _deployFeeModule(p, pool);
-        console2.log("SwapFeeModuleV3:", address(feeModule));
+        (address feeAddr, address surplusAddr, address riskAddr) = _deployFeeStack(p, pool, strategist);
+
+        if (vm.envOr("DEPLOY_DELTAFLOW_FEE", true)) {
+            console2.log("FeeSurplus:", surplusAddr);
+            console2.log("DeltaFlowRiskEngine:", riskAddr);
+            console2.log("DeltaFlowCompositeFeeModule:", feeAddr);
+        } else {
+            console2.log("SwapFeeModuleV3 (balance-seeking):", feeAddr);
+        }
 
         pool.setALM(address(alm));
-        pool.setSwapFeeModule(address(feeModule));
+        pool.setSwapFeeModule(feeAddr);
 
         vault.setALM(address(alm));
 
-        console2.log("--- addresses ---");
-        console2.log("SOVEREIGN_VAULT_ADDRESS=", address(vault));
+        console2.log("--- addresses (copy to backend .env) ---");
+        console2.log("SOVEREIGN_VAULT=", address(vault));
         console2.log("WATCH_POOL=", address(pool));
         console2.log("SOVEREIGN_ALM=", address(alm));
-        console2.log("SWAP_FEE_MODULE=", address(feeModule));
+        console2.log("SWAP_FEE_MODULE=", feeAddr);
+        if (surplusAddr != address(0)) {
+            console2.log("FEE_SURPLUS=", surplusAddr);
+            console2.log("DELTAFLOW_RISK_ENGINE=", riskAddr);
+        }
 
         if (deployHedge) {
             uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);
@@ -207,7 +319,35 @@ abstract contract AmmDeployBase is Script {
             console2.log("HedgeEscrow:", address(he));
             console2.log("HEDGE_ESCROW=", address(he));
             console2.log("BASE_TOKEN_INDEX (backend PURR_TOKEN_INDEX)=", baseTi);
-            console2.log("SPOT_ASSET_INDEX=", spotAsset);
+            console2.log("SPOT_ASSET_INDEX (10000+spotIdx)=", spotAsset);
+            console2.log("SPOT_INDEX (universe)=", spotIdx);
+        }
+
+        console2.log("--- frontend / backend .env (Hyperliquid testnet, chain 998) ---");
+        if (!isWethStack) {
+            console2.log("NEXT_PUBLIC_POOL=", vm.toString(address(pool)));
+            console2.log("NEXT_PUBLIC_VAULT=", vm.toString(address(vault)));
+            console2.log("NEXT_PUBLIC_ALM=", vm.toString(address(alm)));
+            console2.log("NEXT_PUBLIC_SWAP_FEE_MODULE=", vm.toString(feeAddr));
+            console2.log("NEXT_PUBLIC_USDC=", vm.toString(p.usdc));
+            console2.log("NEXT_PUBLIC_PURR=", vm.toString(p.purr));
+            console2.log("SOVEREIGN_VAULT=", vm.toString(address(vault)));
+            console2.log("WATCH_POOL=", vm.toString(address(pool)));
+            console2.log("PURR_ADDRESS=", vm.toString(p.purr));
+            if (surplusAddr != address(0)) {
+                console2.log("NEXT_PUBLIC_FEE_SURPLUS=", vm.toString(surplusAddr));
+                console2.log("NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE=", vm.toString(riskAddr));
+            }
+        } else {
+            console2.log("NEXT_PUBLIC_POOL_WETH=", vm.toString(address(pool)));
+            console2.log("NEXT_PUBLIC_VAULT_WETH=", vm.toString(address(vault)));
+            console2.log("NEXT_PUBLIC_ALM_WETH=", vm.toString(address(alm)));
+            console2.log("NEXT_PUBLIC_SWAP_FEE_MODULE_WETH=", vm.toString(feeAddr));
+            console2.log("NEXT_PUBLIC_WETH=", vm.toString(p.purr));
+            if (surplusAddr != address(0)) {
+                console2.log("NEXT_PUBLIC_FEE_SURPLUS_WETH=", vm.toString(surplusAddr));
+                console2.log("NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE_WETH=", vm.toString(riskAddr));
+            }
         }
     }
 }

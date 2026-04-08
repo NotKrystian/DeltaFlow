@@ -1,10 +1,21 @@
 # Current implementation (trading, fees, routing)
 
-This page describes **what the repository code does today** on **HyperEVM**: **USDC** quoted against a **base spot asset** (the primary deployment uses **PURR**; the same contracts can target **WETH** with a separate deploy and correct spot indices / decimals). Swaps use **balance-seeking** fees and **vault ↔ HyperCore** USDC flows where applicable.
+This page describes **what the repository code does today** on **HyperEVM**: **USDC** quoted against a **base spot asset** (the primary deployment uses **PURR**; the same contracts can target **WETH** with a separate deploy and correct spot indices / decimals). The default **`DeployAll`** path wires **DeltaFlow** on-chain fee components; **BalanceSeekingSwapFeeModuleV3** remains available when **`DEPLOY_DELTAFLOW_FEE=false`**. Off-chain **API wallet** hedging is **not** the backend execution path; see **Hedge escrow** below.
 
-{% hint style="info" %}
-Older marketing materials or README sections may still mention an eight-component quote engine, risk engine, or hedge FSM. Those modules are **not** present in the current Solidity tree unless explicitly reintroduced. Off-chain **API wallet** hedging is **not** the current backend path; see **Hedge escrow** below.
-{% endhint %}
+```mermaid
+sequenceDiagram
+  participant User
+  participant Pool as SovereignPool
+  participant Fee as Swap fee module
+  participant ALM as SovereignALM
+  participant Vault as SovereignVault
+  User->>Pool: swap()
+  Pool->>Fee: getSwapFeeInBips
+  Fee-->>Pool: fee bips
+  Pool->>ALM: getQuote (spot)
+  ALM-->>Pool: amountOut
+  Pool->>Vault: token flows / settlement
+```
 
 ---
 
@@ -27,9 +38,28 @@ Older marketing materials or README sections may still mention an eight-componen
 
 ## How fees are composed
 
+### Default: DeltaFlow stack (`DEPLOY_DELTAFLOW_FEE=true`)
+
+[`DeployAll`](../../contracts/script/DeployAll.s.sol) deploys **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, and **`DeltaFlowCompositeFeeModule`** (`contracts/src/deltaflow/`), then **`pool.setSwapFeeModule(composite)`** and **`feeSurplus.setPool(pool)`**. The composite module composes multiple fee components (perp execution, spot shortfall, delay, basis, funding caps, etc. — see **`DeltaFlowFeeMath`**) and consults the risk engine where configured.
+
+```mermaid
+flowchart TB
+  Pool[SovereignPool]
+  Comp[DeltaFlowCompositeFeeModule]
+  Risk[DeltaFlowRiskEngine]
+  Surplus[FeeSurplus]
+  Pool --> Comp
+  Comp --> Risk
+  Comp --> Surplus
+```
+
+Env knobs are prefixed with **`DF_`** and **`SURPLUS_FRACTION_BPS`** / **`VOLATILE_REGIME`** — see [`deploy/testnet.env.example`](../../deploy/testnet.env.example).
+
+### Alternative: balance-seeking V3 (`DEPLOY_DELTAFLOW_FEE=false`)
+
 On-chain fees come from **`BalanceSeekingSwapFeeModuleV3`** (`SwapFeeModuleV3.sol`) when wired as the pool’s swap fee module; otherwise the pool uses its **default fee in bips**.
 
-When the fee module is active, **`getSwapFeeInBips`** roughly:
+When that fee module is active, **`getSwapFeeInBips`** roughly:
 
 1. **Liquidity check** — Estimates output at spot and **reverts** if the vault cannot pay **`tokenOut`** (with buffer).
 
@@ -98,11 +128,12 @@ Do **not** confuse **perp universe** ids (e.g. PURR = **125** in `meta`) with th
 
 - `contracts/src/SovereignPool.sol` — `swap`, fee module hook, ALM quote, vault payouts.
 - `contracts/src/SovereignALM.sol` — spot quote and vault liquidity check.
-- `contracts/src/SwapFeeModuleV3.sol` — balance-seeking fee in bips.
+- `contracts/src/deltaflow/` — **`DeltaFlowCompositeFeeModule`**, **`DeltaFlowRiskEngine`**, **`FeeSurplus`**, **`DeltaFlowFeeMath`** (default fee path when **`DEPLOY_DELTAFLOW_FEE=true`**).
+- `contracts/src/SwapFeeModuleV3.sol` — balance-seeking fee in bips (**`DEPLOY_DELTAFLOW_FEE=false`**).
 - `contracts/src/SovereignVault.sol` — LP, Core bridge/allocate, `sendTokensToRecipient`.
 - `contracts/src/HedgeEscrow.sol` — CoreWriter limit orders + `claimPurrBuy`.
 - `backend/server.py` — swap log listener + escrow status polling.
 - `contracts/script/DeployHedgeEscrow.s.sol` — standalone **`HedgeEscrow`** deploy with precompile-derived indices.
-- `contracts/script/DeployAll.s.sol` — full PURR stack; optional **`SKIP_HL_AGENT`**, **`DEPLOY_HEDGE_ESCROW`**, and (when added) **`DEPLOY_USDC_WETH`** for a second USDC/WETH stack.
+- `contracts/script/DeployAll.s.sol` — full PURR stack; optional **`DEPLOY_USDC_WETH`** for a second USDC/WETH stack.
 
-See also [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).
+See also [Pairs and deployment scripts](../deployment/pairs-and-scripts.md) and [Testnet asset IDs](../deployment/testnet-asset-ids.md).

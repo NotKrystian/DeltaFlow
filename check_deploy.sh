@@ -1,15 +1,21 @@
+#!/usr/bin/env bash
+# Verify on-chain wiring against env or defaults (Hyperliquid testnet 998).
+# Override: POOL=... VAULT=... ALM=... SWAP_FEE_MODULE=... DEPLOYER=...
 set -euo pipefail
 
-RPC="https://rpc.hyperliquid-testnet.xyz/evm"
+RPC="${RPC_URL:-https://rpc.hyperliquid-testnet.xyz/evm}"
 
-VAULT="0x00EA9027E3601608ab1B0A68b5753Fd2A4F2b82F"
-POOL="0x2156C2774C9888186a91223932f8Cac7bC680503"
-ALM="0x9ed8E367355Cf2988D13F0A13E13Dc2Ab6358F4B"
-FEE="0x2768f6ccdF4E0Ca55a4E5E38Bb29f4cc58CcaEDC"
+# Defaults match frontend/src/contracts.ts placeholders — replace after deploy.
+POOL="${POOL:-0x2E5bB169b596b3136C717258b40D6F83Ae5393Fd}"
+VAULT="${VAULT:-0x715EB367788e71C4c6aee4E8994aD407807fec27}"
+ALM="${ALM:-0x773ACA23c3B9E9EB8e7BD27Da3863957B66e9526}"
+FEE="${SWAP_FEE_MODULE:-0xA0Fa62675a8Db6814510eEF716c67021F249a5d6}"
 
-PURR="0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57"
-USDC="0x2B3370eE501B4a559b57D449569354196457D8Ab"
-DEPLOYER="0x13e00D9810d3C8Dc19A8C9A172fd9A8aC56e94e0"
+PURR="${PURR_TOKEN:-0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57}"
+USDC="${USDC_TOKEN:-0x2B3370eE501B4a559b57D449569354196457D8Ab}"
+# Wallet that broadcast the deploy (SovereignVault.strategist == msg.sender of vault deploy)
+DEPLOYER="${DEPLOYER:-0x13e00D9810d3C8Dc19A8C9A172fd9A8aC56e94e0}"
+POOL_MANAGER="${POOL_MANAGER:-$DEPLOYER}"
 
 norm() { echo "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -51,7 +57,7 @@ echo "RPC: $RPC"
 echo "POOL: $POOL"
 echo "VAULT: $VAULT"
 echo "ALM: $ALM"
-echo "FEE: $FEE"
+echo "SWAP_FEE_MODULE: $FEE"
 echo
 
 t0=$(call_addr "$POOL" "token0()(address)")
@@ -65,7 +71,7 @@ expect_eq "Pool.token0 == PURR" "$t0" "$PURR"
 expect_eq "Pool.token1 == USDC" "$t1" "$USDC"
 expect_eq "Pool.sovereignVault == Vault" "$sv" "$VAULT"
 expect_eq "Pool.alm == ALM" "$alm" "$ALM"
-expect_eq "Pool.swapFeeModule == FeeModule" "$sfm" "$FEE"
+expect_eq "Pool.swapFeeModule == SWAP_FEE_MODULE" "$sfm" "$FEE"
 expect_eq "Pool.poolManager == DEPLOYER" "$pm" "$DEPLOYER"
 
 echo
@@ -75,7 +81,7 @@ v_strat=$(call_addr "$VAULT" "strategist()(address)")
 v_auth=$(call_bool "$VAULT" "authorizedPools(address)(bool)" "$POOL")
 
 expect_eq "Vault.usdc == USDC" "$v_usdc" "$USDC"
-expect_eq "Vault.strategist == DEPLOYER" "$v_strat" "$DEPLOYER"
+expect_eq "Vault.strategist == deployer wallet" "$v_strat" "$DEPLOYER"
 expect_true "Vault.authorizedPools(POOL) == true" "$v_auth"
 
 echo
@@ -105,6 +111,15 @@ if [[ -n "${fee_pool:-}" ]]; then
   expect_eq "FeeModule.pool == POOL" "$fee_pool" "$POOL"
 else
   echo "⚠️  FeeModule check skipped: couldn't find pool()/sovereignPool() getter."
+fi
+
+if [[ -n "${FEE_SURPLUS:-}" && "${FEE_SURPLUS}" != "0x0000000000000000000000000000000000000000" ]]; then
+  fs_pool=$(call_addr "$FEE_SURPLUS" "pool()(address)" 2>/dev/null || true)
+  if [[ -n "${fs_pool:-}" ]]; then
+    expect_eq "FeeSurplus.pool == POOL" "$fs_pool" "$POOL"
+  else
+    echo "⚠️  FEE_SURPLUS set but pool() not readable — skip."
+  fi
 fi
 
 echo

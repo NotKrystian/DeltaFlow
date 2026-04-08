@@ -17,6 +17,7 @@
 ## Deployment
 
 * [Pairs and deployment scripts](deployment/pairs-and-scripts.md)
+* [Testnet asset IDs](deployment/testnet-asset-ids.md)
 
 ## Operations
 

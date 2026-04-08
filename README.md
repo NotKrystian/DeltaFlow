@@ -85,52 +85,33 @@ pnpm dev
 
 ### How to deploy
 
-## Setting up .env (for HyperLiquid testnet)
+**Chain:** Hyperliquid **testnet** HyperEVM (**998**). Authoritative env template: [`deploy/testnet.env.example`](./deploy/testnet.env.example). Copy it to the repo root as **`.env`** and fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex.s.sol`](./contracts/script/ReadSpotIndex.s.sol)), plus factory/verifier addresses required by your deployment. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (deploys **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, **`DeltaFlowCompositeFeeModule`**); set **`false`** for **`BalanceSeekingSwapFeeModuleV3`** only.
 
-```
-TESTNET_RPC_URL=https://rpc.hyperliquid-testnet.xyz/evm
-CHAIN_ID=998
-ALCHEMY_WS_URL= #needed for contract event listening
-STRATEGIST_EVM_PRIVATE_KEY=
-USDC=0x2B3370eE501b4a559b57D449569354196457D8Ab
-PURR=0xa9056c15938f9aff34cd497c722ce33db0c2fd57
-REBALANCE_BAND=0.015
-HL_AGENT_NAME=insert-name
-INVERT_PURR_PX=false
-SPOT_INDEX_PURR=
-# Optional; default 1e8 — must match SovereignALM / fee module (`PrecompileLib.normalizedSpotPx` scale)
-RAW_PX_SCALE=100000000
-# Optional second pair in one broadcast: DEPLOY_USDC_WETH=true plus WETH, SPOT_INDEX_WETH, INVERT_WETH_PX
-ENABLE_HL_TRADING=true
-HL_SECRET_KEY=
-HL_ACCOUNT_ADDRESS=
-SOVEREIGN_VAULT_ADDRESS=
-WATCH_POOL=
-PROTOCOL_FACTORY=
-VERIFIER_MODULE=
-POOL_MANAGER=
-# Swap fee params
-DEFAULT_SWAP_FEE_BIPS=15
-
-# Fee module params
-BASE_FEE_BIPS=15
-MIN_FEE_BIPS=5
-MAX_FEE_BIPS=1000
-PENALTY_SLOPE_BIPS_PER_SHARE_BPS=1
-DISCOUNT_SLOPE_BIPS_PER_SHARE_BPS=1
-LIQUIDITY_BUFFER_BPS=50
-DEADZONE_IMBALANCE_BIPS=200
-PENALTY_SLOPE_BIPS_PER_PCT=5
-DISCOUNT_SLOPE_BIPS_PER_PCT=5
-```
+**Indices and asset ids** (`10000 + spotIndex`, token indices, perp vs spot): [`docs/deployment/testnet-asset-ids.md`](./docs/deployment/testnet-asset-ids.md).
 
 ## Deployment
 
+**Recommended (one step — deploy + write `frontend/.env.local` and `backend/.env`):**
+
 ```shell
-$ forge clean
-$ forge build
-$ forge script contracts/script/DeployAll.s.sol:DeployAll  --rpc-url $TESTNET_RPC_URL  --broadcast -vvvv
+forge clean && forge build
+./scripts/deploy_all_testnet.sh
 ```
+
+This runs `forge script ... DeployAll ... --broadcast` then **`python3 scripts/sync_env_from_broadcast.py`**, which reads `broadcast/DeployAll.s.sol/998/run-latest.json` and merges contract addresses into those env files (existing keys like `ALCHEMY_WSS_URL` / `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` are preserved).
+
+Manual equivalent:
+
+```shell
+forge script contracts/script/DeployAll.s.sol:DeployAll \
+  --rpc-url https://rpc.hyperliquid-testnet.xyz/evm \
+  --broadcast -vvvv
+RPC_URL=https://rpc.hyperliquid-testnet.xyz/evm python3 scripts/sync_env_from_broadcast.py
+```
+
+See [`scripts/sync_env_from_broadcast.py`](./scripts/sync_env_from_broadcast.py) for flags (`--dry-run`, custom paths).
+
+Optional: `./check_deploy.sh` with **`POOL`**, **`VAULT`**, **`ALM`**, **`SWAP_FEE_MODULE`**, **`DEPLOYER`**, **`POOL_MANAGER`** exported to match your broadcast.
 
 ## Backend Server
 

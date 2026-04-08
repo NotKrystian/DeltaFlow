@@ -4,12 +4,24 @@
 
 This documentation matches **`contracts/src`** and the backend in this repository. For the full detail, start with [Current implementation](architecture/current-implementation.md).
 
+```mermaid
+flowchart TB
+  subgraph docs [Documentation map]
+    CI[Current implementation]
+    DP[Pairs and scripts]
+    TA[Testnet asset IDs]
+    CI --> DP
+    DP --> TA
+  end
+```
+
 ## What to read first
 
 | If you want to… | Go to |
 |-----------------|--------|
 | **What the code does today** (fees, swaps, Core, escrow) | [Current implementation](architecture/current-implementation.md) |
 | Deploy **USDC/PURR** vs **USDC/WETH** | [Pairs and deployment scripts](deployment/pairs-and-scripts.md) |
+| **Spot indices, token ids, `10000+spotIndex`** | [Testnet asset IDs](deployment/testnet-asset-ids.md) |
 | Run the stack locally | [Quick start](getting-started/quick-start.md) |
 | System overview | [Architecture](architecture/overview.md) |
 | On-chain components | [Protocol contracts](protocol/contracts.md) |
@@ -18,7 +30,7 @@ This documentation matches **`contracts/src`** and the backend in this repositor
 ## At a glance
 
 - **Chain:** Hyperliquid Testnet HyperEVM (chain ID `998`) for development.
-- **On-chain:** `SovereignPool` + `SovereignALM` + `SovereignVault` + optional `BalanceSeekingSwapFeeModuleV3` + optional `HedgeEscrow`.
+- **On-chain:** `SovereignPool` + `SovereignALM` + `SovereignVault` + default **DeltaFlow** fee stack (`DeltaFlowCompositeFeeModule`, `FeeSurplus`, `DeltaFlowRiskEngine`) or optional `BalanceSeekingSwapFeeModuleV3` + optional `HedgeEscrow`.
 - **Pairs:** Primary docs describe **USDC/PURR**; **USDC/WETH** uses the same contracts in a **separate** deploy (vault + pool + ALM + fee module per pair). See [Pairs and deployment scripts](deployment/pairs-and-scripts.md).
 - **Off-chain:** FastAPI backend for swap logs and **`/escrow/trades`** when configured; Next.js for swap, liquidity, and Hedge UI.
 
