@@ -87,8 +87,8 @@ export default function EscrowClaimsCard() {
   if (!escrowConfigured) {
     return (
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 text-sm text-[var(--text-muted)]">
-        Set <code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW</code> to the deployed{" "}
-        <code className="text-xs">HedgeEscrow</code> address to track CoreWriter hedges and claims.
+        Sync env from deploy (<code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW</code>) —{" "}
+        <code className="text-xs">HedgeEscrow</code> is deployed with every stack.
       </div>
     );
   }

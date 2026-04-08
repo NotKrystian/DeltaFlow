@@ -35,7 +35,7 @@ where **`spotIndex`** is the same **`getSpotIndex`** universe index as above. [`
 
 **`PrecompileLib.getTokenIndex(baseToken)`** returns the **Core token index** for that EVM address (used for **`spotBalance`** and related reads). The backend env **`PURR_TOKEN_INDEX`** must hold this value for the **base** asset (PURR, WETH, …). It is **not** the perp universe id and **not** `10000 + spotIndex`.
 
-Deploy logs print **`BASE_TOKEN_INDEX (backend PURR_TOKEN_INDEX)=`** when **`DEPLOY_HEDGE_ESCROW=true`**.
+Deploy logs print **`PURR_TOKEN_INDEX=`** (Core token index for the base asset) for **`backend/.env`** — **`HedgeEscrow`** is always deployed with **`DeployAll`**.
 
 ## DeltaFlow composite fee module — perp and BBO
 

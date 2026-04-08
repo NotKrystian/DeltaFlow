@@ -71,6 +71,16 @@ def _parse_stacks(transactions: list[dict]) -> list[dict]:
             cur["fee_module"] = addr
         elif name == "HedgeEscrow":
             cur["hedge_escrow"] = addr
+            args = tx.get("arguments") or []
+            if len(args) >= 4:
+                ti_raw = args[3]
+                try:
+                    if isinstance(ti_raw, str) and ti_raw.startswith("0x"):
+                        cur["purr_token_index"] = str(int(ti_raw, 16))
+                    else:
+                        cur["purr_token_index"] = str(int(str(ti_raw), 10))
+                except (TypeError, ValueError):
+                    pass
 
     if cur:
         stacks.append(cur)
@@ -180,12 +190,20 @@ def main() -> int:
     be["CHAIN_ID"] = str(args.chain_id)
 
     he = primary.get("hedge_escrow")
-    if he:
-        fe["NEXT_PUBLIC_HEDGE_ESCROW"] = he
-        be["HEDGE_ESCROW"] = he
-        pti = _hedge_purr_token_index(he, args.rpc_url)
-        if pti is not None:
-            be["PURR_TOKEN_INDEX"] = pti
+    if not he:
+        print(
+            "Error: no HedgeEscrow in broadcast (DeployAll always deploys it). Use a fresh DeployAll broadcast.",
+            file=sys.stderr,
+        )
+        return 1
+
+    fe["NEXT_PUBLIC_HEDGE_ESCROW"] = he
+    be["HEDGE_ESCROW"] = he
+    pti = _hedge_purr_token_index(he, args.rpc_url)
+    if pti is None:
+        pti = primary.get("purr_token_index")
+    if pti is not None:
+        be["PURR_TOKEN_INDEX"] = pti
 
     # Second stack (USDC/WETH)
     if len(stacks) > 1:
@@ -198,6 +216,9 @@ def main() -> int:
         fe["NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE_WETH"] = w.get("risk_engine", "0x0000000000000000000000000000000000000000")
         if "token0" in w:
             fe["NEXT_PUBLIC_WETH"] = w["token0"]
+        he_w = w.get("hedge_escrow")
+        if he_w:
+            fe["NEXT_PUBLIC_HEDGE_ESCROW_WETH"] = he_w
 
     if not args.dry_run:
         print(f"Using broadcast: {bj}")
@@ -206,11 +227,12 @@ def main() -> int:
     _merge_env(args.frontend_env, fe, args.dry_run)
     _merge_env(args.backend_env, be, args.dry_run)
 
-    if args.rpc_url and he and "PURR_TOKEN_INDEX" not in be and not args.dry_run:
+    if "PURR_TOKEN_INDEX" not in be and not args.dry_run:
         print(
-            "Note: install foundry `cast` and set --rpc-url to auto-fill PURR_TOKEN_INDEX from HedgeEscrow.",
+            "Error: PURR_TOKEN_INDEX missing (need HedgeEscrow constructor args in broadcast, or run with RPC_URL + `cast`).",
             file=sys.stderr,
         )
+        return 1
 
     return 0
 

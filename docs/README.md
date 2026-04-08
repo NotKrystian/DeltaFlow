@@ -1,6 +1,6 @@
 # DeltaFlow
 
-**AMM on HyperEVM** — spot-index pricing, balance-seeking fees, vault-held liquidity, optional **HedgeEscrow** hedges via **CoreWriter** (no API-wallet execution in the current backend).
+**AMM on HyperEVM** — spot-index pricing, fees, vault-held liquidity, and **HedgeEscrow** (CoreWriter spot surface; perp risk layered by strategy — see [Current implementation](architecture/current-implementation.md)).
 
 This documentation matches **`contracts/src`** and the backend in this repository. For the full detail, start with [Current implementation](architecture/current-implementation.md).
 
@@ -30,8 +30,8 @@ flowchart TB
 ## At a glance
 
 - **Chain:** Hyperliquid Testnet HyperEVM (chain ID `998`) for development.
-- **On-chain:** `SovereignPool` + `SovereignALM` + `SovereignVault` + default **DeltaFlow** fee stack (`DeltaFlowCompositeFeeModule`, `FeeSurplus`, `DeltaFlowRiskEngine`) or optional `BalanceSeekingSwapFeeModuleV3` + optional `HedgeEscrow`.
+- **On-chain:** `SovereignPool` + `SovereignALM` + `SovereignVault` + default **DeltaFlow** fee stack (`DeltaFlowCompositeFeeModule`, `FeeSurplus`, `DeltaFlowRiskEngine`) or `BalanceSeekingSwapFeeModuleV3` + **`HedgeEscrow`** per market stack.
 - **Pairs:** Primary docs describe **USDC/PURR**; **USDC/WETH** uses the same contracts in a **separate** deploy (vault + pool + ALM + fee module per pair). See [Pairs and deployment scripts](deployment/pairs-and-scripts.md).
-- **Off-chain:** FastAPI backend for swap logs and **`/escrow/trades`** when configured; Next.js for swap, liquidity, and Hedge UI.
+- **Off-chain:** FastAPI backend for swap logs, **`HEDGE_ESCROW`**, **`PURR_TOKEN_INDEX`**, **`/escrow/trades`**; Next.js for swap, liquidity, and Hedge UI.
 
 For the **accurate, code-level** description, use [Current implementation](architecture/current-implementation.md).

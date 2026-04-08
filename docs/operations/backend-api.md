@@ -1,13 +1,13 @@
 # Backend API
 
-The FastAPI app in **`backend/server.py`** streams **`Swap`** logs from **`WATCH_POOL`**, and (when **`HEDGE_ESCROW`** is set) polls **`HedgeEscrow`** + Core precompiles so the UI can show **claimable** hedges. **Hyperliquid API wallets / `Exchange` are not used** for hedge execution — orders are placed on-chain via **CoreWriter** inside **`HedgeEscrow.sol`**.
+The FastAPI app in **`backend/server.py`** streams **`Swap`** logs from **`WATCH_POOL`** and polls **`HedgeEscrow`** + Core precompiles so the UI can show **claimable** hedges. **`HEDGE_ESCROW`** and **`PURR_TOKEN_INDEX`** are **required**. **Hyperliquid API wallets / `Exchange` are not used** for hedge execution — orders are placed on-chain via **CoreWriter** inside **`HedgeEscrow.sol`**.
 
 ```mermaid
 flowchart LR
   RPC[EVM RPC + Alchemy WSS]
   S[server.py]
   P[(WATCH_POOL)]
-  E[HedgeEscrow optional]
+  E[HedgeEscrow]
   RPC --> S
   S --> P
   S --> E
@@ -17,10 +17,10 @@ flowchart LR
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Pool, chain, optional **`hedgeEscrow`**, **`purrTokenIndex`**, poll interval. |
+| `/health` | GET | Pool, chain, **`hedgeEscrow`**, **`purrTokenIndex`**, poll interval. |
 | `/events` | GET | Recent decoded swap events (`limit`). |
-| `/escrow/trades` | GET | Snapshot of all escrow trades + **`canClaimBuy`** (requires **`HEDGE_ESCROW`** env). |
-| `/escrow/spot/{user}` | GET | Raw **`spotBalance`** precompile reads for USDC (`token 0`) and base token (if **`PURR_TOKEN_INDEX`** set — name is legacy; value is **Core token index** for the deployed base asset). |
+| `/escrow/trades` | GET | Snapshot of all escrow trades + **`canClaimBuy`**. |
+| `/escrow/spot/{user}` | GET | Raw **`spotBalance`** precompile reads for USDC (`token 0`) and base token (**`PURR_TOKEN_INDEX`** — Core token index for the pool base asset; name is legacy). |
 
 ## WebSocket
 

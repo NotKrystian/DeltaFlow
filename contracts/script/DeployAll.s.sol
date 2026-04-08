@@ -9,7 +9,6 @@ import {AmmDeployBase} from "./AmmDeployBase.s.sol";
 contract DeployAll is AmmDeployBase {
     function run() external {
         Params memory p = _loadPurrParams();
-        bool hedge = vm.envOr("DEPLOY_HEDGE_ESCROW", false);
         bool wethToo = vm.envOr("DEPLOY_USDC_WETH", false);
 
         console2.log("ChainId:", block.chainid);
@@ -19,11 +18,11 @@ contract DeployAll is AmmDeployBase {
 
         vm.startBroadcast(p.pk);
 
-        _deployOneStack(p, hedge, "USDC/PURR", false);
+        _deployOneStack(p, "USDC/PURR", false);
 
         if (wethToo) {
             Params memory w = _loadWethParams(p);
-            _deployOneStack(w, hedge, "USDC/WETH", true);
+            _deployOneStack(w, "USDC/WETH", true);
         }
 
         vm.stopBroadcast();

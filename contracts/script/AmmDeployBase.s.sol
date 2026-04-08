@@ -251,7 +251,8 @@ abstract contract AmmDeployBase is Script {
         return (address(comp), address(fs), address(risk));
     }
 
-    function _deployOneStack(Params memory p, bool deployHedge, string memory label, bool isWethStack) internal {
+    /// @notice Deploys one full market stack including **HedgeEscrow** (core liquidity / hedge surface via CoreWriter).
+    function _deployOneStack(Params memory p, string memory label, bool isWethStack) internal {
         console2.log("==========", label, "==========");
         console2.log("Base token:", p.purr);
         console2.log("USDC:", p.usdc);
@@ -301,6 +302,12 @@ abstract contract AmmDeployBase is Script {
 
         vault.setALM(address(alm));
 
+        uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);
+        uint64 spotIdx = PrecompileLib.getSpotIndex(p.purr);
+        uint32 spotAsset = uint32(uint256(10000) + uint256(spotIdx));
+        HedgeEscrow he = new HedgeEscrow(p.usdc, p.purr, spotAsset, baseTi);
+        console2.log("HedgeEscrow:", address(he));
+
         console2.log("--- addresses (copy to backend .env) ---");
         console2.log("SOVEREIGN_VAULT=", address(vault));
         console2.log("WATCH_POOL=", address(pool));
@@ -310,30 +317,20 @@ abstract contract AmmDeployBase is Script {
             console2.log("FEE_SURPLUS=", surplusAddr);
             console2.log("DELTAFLOW_RISK_ENGINE=", riskAddr);
         }
+        console2.log("HEDGE_ESCROW=", address(he));
+        console2.log("PURR_TOKEN_INDEX=", baseTi);
+        console2.log("SPOT_ASSET_INDEX (10000+spotIdx)=", spotAsset);
+        console2.log("SPOT_INDEX (universe)=", spotIdx);
 
-        if (deployHedge) {
-            uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);
-            uint64 spotIdx = PrecompileLib.getSpotIndex(p.purr);
-            uint32 spotAsset = uint32(uint256(10000) + uint256(spotIdx));
-            HedgeEscrow he = new HedgeEscrow(p.usdc, p.purr, spotAsset, baseTi);
-            console2.log("HedgeEscrow:", address(he));
-            console2.log("HEDGE_ESCROW=", address(he));
-            console2.log("BASE_TOKEN_INDEX (backend PURR_TOKEN_INDEX)=", baseTi);
-            console2.log("SPOT_ASSET_INDEX (10000+spotIdx)=", spotAsset);
-            console2.log("SPOT_INDEX (universe)=", spotIdx);
-        }
-
-        console2.log("--- frontend / backend .env (Hyperliquid testnet, chain 998) ---");
+        console2.log("--- frontend .env (NEXT_PUBLIC_*, Hyperliquid testnet chain 998) ---");
         if (!isWethStack) {
             console2.log("NEXT_PUBLIC_POOL=", vm.toString(address(pool)));
             console2.log("NEXT_PUBLIC_VAULT=", vm.toString(address(vault)));
             console2.log("NEXT_PUBLIC_ALM=", vm.toString(address(alm)));
             console2.log("NEXT_PUBLIC_SWAP_FEE_MODULE=", vm.toString(feeAddr));
+            console2.log("NEXT_PUBLIC_HEDGE_ESCROW=", vm.toString(address(he)));
             console2.log("NEXT_PUBLIC_USDC=", vm.toString(p.usdc));
             console2.log("NEXT_PUBLIC_PURR=", vm.toString(p.purr));
-            console2.log("SOVEREIGN_VAULT=", vm.toString(address(vault)));
-            console2.log("WATCH_POOL=", vm.toString(address(pool)));
-            console2.log("PURR_ADDRESS=", vm.toString(p.purr));
             if (surplusAddr != address(0)) {
                 console2.log("NEXT_PUBLIC_FEE_SURPLUS=", vm.toString(surplusAddr));
                 console2.log("NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE=", vm.toString(riskAddr));
@@ -343,6 +340,7 @@ abstract contract AmmDeployBase is Script {
             console2.log("NEXT_PUBLIC_VAULT_WETH=", vm.toString(address(vault)));
             console2.log("NEXT_PUBLIC_ALM_WETH=", vm.toString(address(alm)));
             console2.log("NEXT_PUBLIC_SWAP_FEE_MODULE_WETH=", vm.toString(feeAddr));
+            console2.log("NEXT_PUBLIC_HEDGE_ESCROW_WETH=", vm.toString(address(he)));
             console2.log("NEXT_PUBLIC_WETH=", vm.toString(p.purr));
             if (surplusAddr != address(0)) {
                 console2.log("NEXT_PUBLIC_FEE_SURPLUS_WETH=", vm.toString(surplusAddr));

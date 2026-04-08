@@ -29,6 +29,9 @@ export const ADDRESSES = {
 
   HEDGE_ESCROW: (process.env.NEXT_PUBLIC_HEDGE_ESCROW ?? ZERO) as `0x${string}`,
 
+  /** Second-market HedgeEscrow when `DEPLOY_USDC_WETH=true` (primary UI still uses `HEDGE_ESCROW`) */
+  HEDGE_ESCROW_WETH: (process.env.NEXT_PUBLIC_HEDGE_ESCROW_WETH ?? ZERO) as `0x${string}`,
+
   FEE_SURPLUS: (process.env.NEXT_PUBLIC_FEE_SURPLUS ?? ZERO) as `0x${string}`,
   DELTAFLOW_RISK_ENGINE: (process.env.NEXT_PUBLIC_DELTAFLOW_RISK_ENGINE ?? ZERO) as `0x${string}`,
 

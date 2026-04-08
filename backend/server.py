@@ -34,11 +34,8 @@ USDC_ADDRESS = os.getenv("USDC_ADDRESS")
 PURR_ADDRESS = os.getenv("PURR_ADDRESS")
 WATCH_POOL = os.getenv("WATCH_POOL")
 
-# Optional: deployed HedgeEscrow — enables /escrow/* and polling
 HEDGE_ESCROW_ADDRESS = os.getenv("HEDGE_ESCROW")
-# Core token index for PURR (not 0 — USDC is 0). Required for `/escrow/spot` PURR leg.
 _PURR_TI = os.getenv("PURR_TOKEN_INDEX")
-PURR_TOKEN_INDEX: Optional[int] = int(_PURR_TI) if _PURR_TI else None
 
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 ESCROW_POLL_INTERVAL_S = float(os.getenv("ESCROW_POLL_INTERVAL_S", "4.0"))
@@ -56,17 +53,29 @@ required = {
     "USDC_ADDRESS": USDC_ADDRESS,
     "PURR_ADDRESS": PURR_ADDRESS,
     "WATCH_POOL": WATCH_POOL,
+    "HEDGE_ESCROW": HEDGE_ESCROW_ADDRESS,
+    "PURR_TOKEN_INDEX": _PURR_TI,
 }
 missing = [k for k, v in required.items() if not v]
 if missing:
     raise RuntimeError(f"Missing env vars: {missing}")
 
+_ZERO = "0x0000000000000000000000000000000000000000"
+if HEDGE_ESCROW_ADDRESS and HEDGE_ESCROW_ADDRESS.lower() == _ZERO:
+    raise RuntimeError("HEDGE_ESCROW must be a deployed HedgeEscrow address (not zero)")
+
 SOVEREIGN_VAULT_ADDRESS = Web3.to_checksum_address(SOVEREIGN_VAULT_ADDRESS)
 USDC_ADDRESS = Web3.to_checksum_address(USDC_ADDRESS)
 PURR_ADDRESS = Web3.to_checksum_address(PURR_ADDRESS)
 WATCH_POOL = Web3.to_checksum_address(WATCH_POOL)
-if HEDGE_ESCROW_ADDRESS:
-    HEDGE_ESCROW_ADDRESS = Web3.to_checksum_address(HEDGE_ESCROW_ADDRESS)
+HEDGE_ESCROW_ADDRESS = Web3.to_checksum_address(HEDGE_ESCROW_ADDRESS)
+
+try:
+    PURR_TOKEN_INDEX: int = int(_PURR_TI or "", 10)
+except ValueError as e:
+    raise RuntimeError("PURR_TOKEN_INDEX must be a decimal integer (Core token index for the pool base asset)") from e
+if PURR_TOKEN_INDEX < 0:
+    raise RuntimeError("PURR_TOKEN_INDEX invalid")
 
 # -----------------------------
 # ABIs (minimal)
@@ -117,11 +126,7 @@ assert SWAP_TOPIC0.startswith("0x") and len(SWAP_TOPIC0) == 66, f"bad topic0: {S
 w3_http = Web3(Web3.HTTPProvider(EVM_RPC_HTTP_URL))
 
 vault_contract = w3_http.eth.contract(address=SOVEREIGN_VAULT_ADDRESS, abi=SOVEREIGN_VAULT_ABI)
-hedge_escrow = (
-    w3_http.eth.contract(address=HEDGE_ESCROW_ADDRESS, abi=HEDGE_ESCROW_ABI)
-    if HEDGE_ESCROW_ADDRESS
-    else None
-)
+hedge_escrow = w3_http.eth.contract(address=HEDGE_ESCROW_ADDRESS, abi=HEDGE_ESCROW_ABI)
 
 CHAIN_ID = int(os.getenv("CHAIN_ID") or w3_http.eth.chain_id)
 
@@ -205,8 +210,6 @@ def _call_spot_balance_precompile(user: str, token_index: int) -> Dict[str, int]
 
 async def poll_escrow_once() -> None:
     global escrow_claimable
-    if not hedge_escrow or not HEDGE_ESCROW_ADDRESS:
-        return
 
     def _read():
         nxt = hedge_escrow.functions.nextTradeId().call()
@@ -341,9 +344,8 @@ async def lifespan(app: FastAPI):
     listener_task = asyncio.create_task(evm_swap_listener_loop(), name="evm_swap_listener")
     heartbeat_task = asyncio.create_task(heartbeat_loop(), name="heartbeat")
 
-    if HEDGE_ESCROW_ADDRESS:
-        escrow_task = asyncio.create_task(escrow_poller_loop(), name="escrow_poller")
-        print("[lifespan] escrow poller started", flush=True)
+    escrow_task = asyncio.create_task(escrow_poller_loop(), name="escrow_poller")
+    print("[lifespan] escrow poller started", flush=True)
 
     try:
         yield
@@ -399,8 +401,6 @@ async def get_events(limit: int = 200) -> List[Dict[str, Any]]:
 @app.get("/escrow/trades")
 async def escrow_trades() -> Dict[str, Any]:
     """Snapshot of all hedge escrow trades + `canClaimBuy` (from contract view)."""
-    if not HEDGE_ESCROW_ADDRESS:
-        return {"ok": False, "reason": "HEDGE_ESCROW not configured"}
     async with escrow_poll_lock:
         snap = dict(escrow_claimable)
     return {
@@ -417,21 +417,17 @@ async def escrow_spot_snapshot(user: str) -> Dict[str, Any]:
 
     def _read():
         usdc_b = _call_spot_balance_precompile(user, 0)
-        if PURR_TOKEN_INDEX is None:
-            return usdc_b, None
         purr_b = _call_spot_balance_precompile(user, PURR_TOKEN_INDEX)
         return usdc_b, purr_b
 
     usdc_b, purr_b = await asyncio.to_thread(_read)
-    out: Dict[str, Any] = {
+    return {
         "ok": True,
         "user": user,
         "usdcToken0": usdc_b,
         "purrTokenIndex": PURR_TOKEN_INDEX,
+        "purrToken": purr_b,
     }
-    if purr_b is not None:
-        out["purrToken"] = purr_b
-    return out
 
 
 @app.websocket("/ws")

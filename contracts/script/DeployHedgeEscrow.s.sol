@@ -8,8 +8,8 @@ import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 import {HedgeEscrow} from "../src/HedgeEscrow.sol";
 
 /// @title DeployHedgeEscrow
-/// @notice Deploys HedgeEscrow with spot limit order asset = 10000 + spotIndex (NOT perp universe id).
-/// @dev Set USDC, PURR from env (same as DeployAll). Run on HyperEVM fork/RPC where precompiles resolve.
+/// @notice Standalone HedgeEscrow deploy (e.g. replacement / custom pair). **`DeployAll` already deploys HedgeEscrow per stack.**
+/// @dev Spot limit order asset = 10000 + spotIndex (NOT perp universe id). Set USDC, PURR from env. Run on HyperEVM RPC where precompiles resolve.
 contract DeployHedgeEscrow is Script {
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");

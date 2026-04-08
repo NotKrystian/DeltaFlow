@@ -111,16 +111,23 @@ If the pool must pay USDC from the vault and **EVM USDC balance is insufficient*
 
 ---
 
-## Hedge escrow (CoreWriter, no API wallet execution)
+## Hedging (core): perp risk + spot liquidity
 
-Optional flow for **spot hedges** that must hit **HyperCore** via the system contract `0x3333…3333`:
+**Product intent:** User swaps against **`SovereignPool`** are fulfilled from **`SovereignVault`** inventory. **Hedging** is not optional: the vault must not absorb one-sided spot risk indefinitely.
 
-- **`contracts/src/HedgeEscrow.sol`** — User approves USDC, calls `openBuyPurrWithUsdc`; the contract **`bridgeToCore`** then **`CoreWriterLib.placeLimitOrder`**. Claims bridge **`purr`** IERC20 (the **base** token at construction) back to EVM. No Hyperliquid `Exchange` / API wallet is involved in execution.
-- **`backend/server.py`** — Polls the escrow contract’s **`canClaimBuy`** view and **`trades`** mapping (plus optional raw **`spotBalance`** precompile reads). Exposes **`GET /escrow/trades`** for the frontend. **Does not** submit HL API orders.
+- **Perpetuals** — Primary tool to **offset vault delta** when users remove base from the pool: add perp exposure in line with net flow; **unwind** when flow reverses.
+- **HyperCore spot** — Used when **on-chain inventory is too small** to fill a trade: buy the shortfall on spot, **bridge to EVM**, and pay the user together with vault inventory—while still managing **net exposure** (including perp) at the protocol/strategist layer.
+
+**In this repository today,** every **`DeployAll`** / **`DeployUsdcWeth`** stack deploys **`HedgeEscrow`**, which implements **CoreWriter spot** limit orders + claim via the system contract `0x3333…3333` (no Hyperliquid API wallet):
+
+- **`contracts/src/HedgeEscrow.sol`** — User approves USDC, calls `openBuyPurrWithUsdc`; the contract **`bridgeToCore`** then **`CoreWriterLib.placeLimitOrder`**. Claims bridge the **base** token back to EVM.
+- **`backend/server.py`** — **Requires** **`HEDGE_ESCROW`** and **`PURR_TOKEN_INDEX`**. Polls **`canClaimBuy`** / **`trades`**, exposes **`GET /escrow/trades`** and **`/escrow/spot/{user}`**. **Does not** submit HL API orders.
+
+Automated **perp** placement tied to each swap is expected to be implemented by **strategist / off-chain workers** or future on-chain modules using the same vault + Core surfaces; **`HedgeEscrow`** is the on-chain **spot** execution surface that deploys with the pool.
 
 ### Perp asset id vs spot limit-order asset id
 
-Do **not** confuse **perp universe** ids (e.g. PURR = **125** in `meta`) with the **`asset`** field passed to **`placeLimitOrder`**. For **spot** books, Hyperliquid uses **`asset = 10000 + spotIndex`**, where **`spotIndex`** is the pair’s index in **`spotMeta.universe`**. Deploy scripts **`DeployHedgeEscrow.s.sol`** and optional **`DeployAll`** with **`DEPLOY_HEDGE_ESCROW=true`** compute **`spotAssetIndex`** this way. Backend **`PURR_TOKEN_INDEX`** must be the **Core token index** for the **base** EVM token (from **`PrecompileLib.getTokenIndex(base)`**), **not** the perp id.
+Do **not** confuse **perp universe** ids (e.g. PURR = **125** in `meta`) with the **`asset`** field passed to **`placeLimitOrder`**. For **spot** books, Hyperliquid uses **`asset = 10000 + spotIndex`**, where **`spotIndex`** is the pair’s index in **`spotMeta.universe`**. **`DeployAll`** computes **`spotAssetIndex`** this way for **`HedgeEscrow`**. Backend **`PURR_TOKEN_INDEX`** must be the **Core token index** for the **base** EVM token (from **`PrecompileLib.getTokenIndex(base)`**), **not** the perp id.
 
 ---
 
@@ -134,6 +141,6 @@ Do **not** confuse **perp universe** ids (e.g. PURR = **125** in `meta`) with th
 - `contracts/src/HedgeEscrow.sol` — CoreWriter limit orders + `claimPurrBuy`.
 - `backend/server.py` — swap log listener + escrow status polling.
 - `contracts/script/DeployHedgeEscrow.s.sol` — standalone **`HedgeEscrow`** deploy with precompile-derived indices.
-- `contracts/script/DeployAll.s.sol` — full PURR stack; optional **`DEPLOY_USDC_WETH`** for a second USDC/WETH stack.
+- `contracts/script/DeployAll.s.sol` — full PURR stack + **`HedgeEscrow`**; optional **`DEPLOY_USDC_WETH`** for a second USDC/WETH stack (second **`HedgeEscrow`**).
 
 See also [Pairs and deployment scripts](../deployment/pairs-and-scripts.md) and [Testnet asset IDs](../deployment/testnet-asset-ids.md).

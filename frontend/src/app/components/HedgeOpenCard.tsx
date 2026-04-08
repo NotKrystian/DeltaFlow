@@ -142,8 +142,8 @@ export default function HedgeOpenCard() {
   if (!escrowConfigured) {
     return (
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 text-sm text-[var(--text-muted)]">
-        Deploy <code className="text-xs">HedgeEscrow</code> and set{" "}
-        <code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW</code> to open hedges.
+        Run <code className="text-xs">DeployAll</code> and <code className="text-xs">scripts/sync_env_from_broadcast.py</code>{" "}
+        so <code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW</code> is set (hedging ships with every stack).
       </div>
     );
   }
