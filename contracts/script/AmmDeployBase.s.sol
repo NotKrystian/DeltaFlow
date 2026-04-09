@@ -309,10 +309,13 @@ abstract contract AmmDeployBase is Script {
         if (p.dfPerpIndex != type(uint32).max) {
             vault.setHedgePerpAsset(p.dfPerpIndex);
             console2.log("HEDGE_PERP_ASSET_INDEX (swap hedge):", p.dfPerpIndex);
-            uint64 minHedgeSz = uint64(vm.envOr("MIN_PERP_HEDGE_SZ", uint256(0)));
-            if (minHedgeSz > 0) {
-                vault.setMinPerpHedgeSz(minHedgeSz);
-                console2.log("MIN_PERP_HEDGE_SZ (batched hedge queue):", minHedgeSz);
+            bool useMarkMin = vm.envOr("USE_MARK_MIN_HEDGE_SZ", true);
+            vault.setUseMarkBasedMinHedgeSz(useMarkMin);
+            console2.log("USE_MARK_MIN_HEDGE_SZ (mark $10 notional threshold):", useMarkMin);
+            uint64 floorSz = uint64(vm.envOr("MIN_PERP_HEDGE_SZ_FLOOR", uint256(0)));
+            if (floorSz > 0) {
+                vault.setMinPerpHedgeSz(floorSz);
+                console2.log("MIN_PERP_HEDGE_SZ_FLOOR (optional sz floor):", floorSz);
             }
         }
 

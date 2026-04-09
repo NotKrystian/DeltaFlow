@@ -8,7 +8,7 @@ struct BalanceSheet {
     /// @dev Core spot totals converted to EVM token decimals (wei).
     uint256 coreUsdc;
     uint256 coreBase;
-    /// @dev Perp size in raw contract units (sign from `szi`).
+    /// @dev Perp size in raw contract units (sign from `szi`), plus queued hedge `sz` not yet sent as IOC (`pendingBuy − pendingSell`).
     int256 perpSzi;
     uint256 markPxNormalized;
     uint256 spotPxNormalized;

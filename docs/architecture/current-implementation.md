@@ -190,7 +190,7 @@ flowchart TB
   ASYNC --> PRE[Read PrecompileLib / Core views in later blocks or off-chain]
 ```
 
-**Deploy** — Forge env **`PERP_INDEX_PURR`** / **`PERP_INDEX_WETH`** must be set to the real perp index for vault-backed pools (**not** `uint32.max`, which skips DeltaFlow composite perp *reads* only). Optional **`MIN_PERP_HEDGE_SZ`** sets **`minPerpHedgeSz`** after **`setHedgePerpAsset`**. See [Pairs and deployment scripts](../deployment/pairs-and-scripts.md) and [`deploy/testnet.env.example`](../../deploy/testnet.env.example).
+**Deploy** — Forge env **`PERP_INDEX_PURR`** / **`PERP_INDEX_WETH`** must be set to the real perp index for vault-backed pools (**not** `uint32.max`, which skips DeltaFlow composite perp *reads* only). **`USE_MARK_MIN_HEDGE_SZ`** / **`MIN_PERP_HEDGE_SZ_FLOOR`** configure **`setUseMarkBasedMinHedgeSz`** / **`setMinPerpHedgeSz`** after **`setHedgePerpAsset`**. See [Pairs and deployment scripts](../deployment/pairs-and-scripts.md) and [`deploy/testnet.env.example`](../../deploy/testnet.env.example).
 
 **Pool-held reserves** — If **`sovereignVault == pool`** (constructor shortcut), there is **no** vault hedge hook and **`hedgePerpAssetIndex`** on the pool is **0** (tests / simplified setups).
 

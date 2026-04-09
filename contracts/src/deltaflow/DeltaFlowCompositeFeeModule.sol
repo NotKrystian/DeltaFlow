@@ -18,6 +18,11 @@ interface ISovereignPoolLite {
     function sovereignVault() external view returns (address);
 }
 
+interface IVaultHedgePending {
+    function pendingHedgeBuySz() external view returns (uint256);
+    function pendingHedgeSellSz() external view returns (uint256);
+}
+
 /// @title DeltaFlowCompositeFeeModule
 /// @notice Risk engine + memo-style fee components; balance sheet = EVM + HyperCore spot + optional perp.
 contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
@@ -104,7 +109,17 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         if (!((t0 == usdc && t1 == base) || (t0 == base && t1 == usdc))) revert Composite__PairMismatch();
 
         BalanceSheet memory sheet = BalanceSheetLib.snapshot(
-            vault, usdc, base, perpIndex, spotIndex, capacityWad, spotAssetForBBO, rawPxScale, rawIsPurrPerUsdc
+            vault,
+            usdc,
+            base,
+            perpIndex,
+            spotIndex,
+            capacityWad,
+            spotAssetForBBO,
+            rawPxScale,
+            rawIsPurrPerUsdc,
+            IVaultHedgePending(vault).pendingHedgeBuySz(),
+            IVaultHedgePending(vault).pendingHedgeSellSz()
         );
 
         uint8 usdcDec = IERC20Metadata(usdc).decimals();

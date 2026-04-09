@@ -16,6 +16,7 @@ library BalanceSheetLib {
 
     /// @param perpIndex Hyperliquid perp index; `type(uint32).max` skips perp reads.
     /// @param spotAssetForBBO Pass `uint32(uint256(10000) + spotIndex)` for spot; 0 skips spread.
+    /// @param pendingHedgeBuySz / pendingHedgeSellSz HL `sz` queued in `SovereignVault` before IOC (0 if N/A).
     function snapshot(
         address account,
         address usdc,
@@ -25,7 +26,9 @@ library BalanceSheetLib {
         uint256 capacityWad,
         uint32 spotAssetForBBO,
         uint256 rawPxScale,
-        bool rawIsPurrPerUsdc
+        bool rawIsPurrPerUsdc,
+        uint256 pendingHedgeBuySz,
+        uint256 pendingHedgeSellSz
     ) internal view returns (BalanceSheet memory s) {
         uint8 usdcDec = IERC20Metadata(usdc).decimals();
         uint8 baseDec = IERC20Metadata(base).decimals();
@@ -43,7 +46,7 @@ library BalanceSheetLib {
 
         if (perpIndex != type(uint32).max) {
             PrecompileLib.Position memory p = PrecompileLib.position(account, uint16(perpIndex));
-            s.perpSzi = int256(int64(p.szi));
+            s.perpSzi = int256(int64(p.szi)) + int256(pendingHedgeBuySz) - int256(pendingHedgeSellSz);
             s.markPxNormalized = PrecompileLib.normalizedMarkPx(perpIndex);
         }
 

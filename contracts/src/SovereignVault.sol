@@ -75,8 +75,14 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     /// @notice HyperCore perp asset index for swap hedges (PURR perp). 0 = disabled (no CoreWriter call).
     uint32 public hedgePerpAssetIndex;
 
-    /// @notice Minimum HL perp order size (`sz` units) before sending an IOC. 0 = send one IOC per swap (no queue).
+    /// @notice When true, batching threshold uses HL ~\$10 min notional from `normalizedMarkPx` + `szDecimals` (with `minPerpHedgeSz` as floor). When false, `minPerpHedgeSz` is the fixed threshold.
+    bool public useMarkBasedMinHedgeSz;
+
+    /// @notice Minimum HL perp order size (`sz` units) before sending an IOC when not using mark-based mode; when using mark-based mode, acts as a floor on the computed threshold. Batching is off iff `!useMarkBasedMinHedgeSz && minPerpHedgeSz == 0`.
     uint64 public minPerpHedgeSz;
+
+    /// @dev HL perp min notional ≈ \$10 in the same 1e6 units as `PrecompileLib.normalizedMarkPx`.
+    uint256 internal constant MIN_PERP_NOTIONAL_USD_1E6 = 10 * 1_000_000;
 
     /// @notice Pending hedge size (HL `sz`) for long-perp hedges (vault paid PURR on swaps).
     uint256 public pendingHedgeBuySz;
@@ -84,11 +90,12 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     /// @notice Pending hedge size (HL `sz`) for short-perp hedges (vault received PURR on swaps).
     uint256 public pendingHedgeSellSz;
 
-    /// @dev Swap outputs waiting for a hedge batch when `minPerpHedgeSz > 0` and the hedge bucket is still below minimum.
+    /// @dev Swap outputs waiting for a hedge batch when batching is on and the hedge bucket is still below threshold.
     struct HedgePayout {
         address recipient;
         address token;
         uint256 amount;
+        uint64 sz;
     }
 
     HedgePayout[] private _pendingPayoutsBuy;
@@ -130,9 +137,43 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         hedgePerpAssetIndex = perpAssetIndex;
     }
 
-    /// @notice HL minimum `sz` for batched perp IOCs. Set from exchange metadata; 0 disables batching (hedge each swap immediately).
+    /// @notice Toggle mark-based \$10 notional threshold (see `MIN_PERP_NOTIONAL_USD_1E6`). If false, `minPerpHedgeSz` alone defines batching and threshold.
+    function setUseMarkBasedMinHedgeSz(bool enabled) external onlyStrategist {
+        useMarkBasedMinHedgeSz = enabled;
+    }
+
+    /// @notice Fixed threshold (`!useMarkBasedMinHedgeSz`) or floor on mark-based threshold. With both off (`!useMarkBasedMinHedgeSz && minSz==0`), each swap sends an IOC (no queue).
     function setMinPerpHedgeSz(uint64 minSz) external onlyStrategist {
         minPerpHedgeSz = minSz;
+    }
+
+    function _hedgeBatching() internal view returns (bool) {
+        return useMarkBasedMinHedgeSz || minPerpHedgeSz > 0;
+    }
+
+    /// @notice Minimum HL `sz` to meet ~\$10 perp notional at current mark, optionally floored by `minPerpHedgeSz`.
+    function hedgeSzThreshold() external view returns (uint256) {
+        return _hedgeSzThreshold(hedgePerpAssetIndex);
+    }
+
+    function _hedgeSzThreshold(uint32 perpIx) internal view returns (uint256) {
+        if (!useMarkBasedMinHedgeSz) {
+            return uint256(minPerpHedgeSz);
+        }
+        if (perpIx == 0) return uint256(minPerpHedgeSz);
+
+        uint256 px = PrecompileLib.normalizedMarkPx(perpIx);
+        uint8 sd = PrecompileLib.perpAssetInfo(perpIx).szDecimals;
+        uint256 factor = 10 ** uint256(sd);
+        uint256 dyn;
+        if (px == 0) {
+            dyn = uint256(minPerpHedgeSz);
+            return dyn == 0 ? 1 : dyn;
+        }
+        dyn = Math.ceilDiv(MIN_PERP_NOTIONAL_USD_1E6 * factor, px);
+        if (dyn == 0) dyn = 1;
+        uint256 floor = uint256(minPerpHedgeSz);
+        return dyn > floor ? dyn : floor;
     }
 
     function _placePerpIoc(uint32 perpIx, bool isBuy, uint64 sz) internal {
@@ -171,6 +212,56 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         delete _pendingPayoutsSell;
     }
 
+    /// @dev FIFO release `matchSz` of sell-side hedge notion from escrow (opposite-direction netting).
+    function _releaseSellSz(uint256 matchSz) internal {
+        uint256 remaining = matchSz;
+        while (remaining > 0 && _pendingPayoutsSell.length > 0) {
+            HedgePayout storage h = _pendingPayoutsSell[0];
+            uint256 take = remaining < uint256(h.sz) ? remaining : uint256(h.sz);
+            uint256 payAmt = Math.mulDiv(h.amount, take, uint256(h.sz));
+            address token = h.token;
+            address recv = h.recipient;
+
+            if (take == uint256(h.sz)) {
+                uint256 last = _pendingPayoutsSell.length - 1;
+                if (last != 0) {
+                    _pendingPayoutsSell[0] = _pendingPayoutsSell[last];
+                }
+                _pendingPayoutsSell.pop();
+            } else {
+                h.sz -= uint64(take);
+                h.amount -= payAmt;
+            }
+            remaining -= take;
+            _sendTokensToRecipient(token, recv, payAmt);
+        }
+    }
+
+    /// @dev FIFO release `matchSz` of buy-side hedge notion from escrow (opposite-direction netting).
+    function _releaseBuySz(uint256 matchSz) internal {
+        uint256 remaining = matchSz;
+        while (remaining > 0 && _pendingPayoutsBuy.length > 0) {
+            HedgePayout storage h = _pendingPayoutsBuy[0];
+            uint256 take = remaining < uint256(h.sz) ? remaining : uint256(h.sz);
+            uint256 payAmt = Math.mulDiv(h.amount, take, uint256(h.sz));
+            address token = h.token;
+            address recv = h.recipient;
+
+            if (take == uint256(h.sz)) {
+                uint256 last = _pendingPayoutsBuy.length - 1;
+                if (last != 0) {
+                    _pendingPayoutsBuy[0] = _pendingPayoutsBuy[last];
+                }
+                _pendingPayoutsBuy.pop();
+            } else {
+                h.sz -= uint64(take);
+                h.amount -= payAmt;
+            }
+            remaining -= take;
+            _sendTokensToRecipient(token, recv, payAmt);
+        }
+    }
+
     /// @inheritdoc ISovereignVaultMinimal
     function processSwapHedge(
         bool vaultPurrOut,
@@ -189,17 +280,29 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         bool isBuy = vaultPurrOut;
 
-        if (minPerpHedgeSz == 0) {
+        if (!_hedgeBatching()) {
             _placePerpIoc(perpIx, isBuy, sz);
             emit SwapHedgeExecuted(perpIx, vaultPurrOut, purrAmountWei, sz);
             return true;
         }
 
-        uint256 thresh = uint256(minPerpHedgeSz);
+        uint256 thresh = _hedgeSzThreshold(perpIx);
 
         if (isBuy) {
+            if (pendingHedgeSellSz > 0) {
+                uint256 matchSz = uint256(sz) < pendingHedgeSellSz ? uint256(sz) : pendingHedgeSellSz;
+                pendingHedgeSellSz -= matchSz;
+                _releaseSellSz(matchSz);
+                sz = uint64(uint256(sz) - matchSz);
+            }
+            if (sz == 0) {
+                return true;
+            }
+
             pendingHedgeBuySz += uint256(sz);
-            _pendingPayoutsBuy.push(HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut}));
+            _pendingPayoutsBuy.push(
+                HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut, sz: sz})
+            );
             emit HedgePayoutEscrowed(recipient, swapTokenOut, amountOut, true);
             emit HedgeSliceQueued(true, sz, pendingHedgeBuySz, pendingHedgeSellSz);
 
@@ -209,8 +312,20 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             _flushBuyAndPayouts(perpIx);
             return false;
         } else {
+            if (pendingHedgeBuySz > 0) {
+                uint256 matchSz = uint256(sz) < pendingHedgeBuySz ? uint256(sz) : pendingHedgeBuySz;
+                pendingHedgeBuySz -= matchSz;
+                _releaseBuySz(matchSz);
+                sz = uint64(uint256(sz) - matchSz);
+            }
+            if (sz == 0) {
+                return true;
+            }
+
             pendingHedgeSellSz += uint256(sz);
-            _pendingPayoutsSell.push(HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut}));
+            _pendingPayoutsSell.push(
+                HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut, sz: sz})
+            );
             emit HedgePayoutEscrowed(recipient, swapTokenOut, amountOut, false);
             emit HedgeSliceQueued(false, sz, pendingHedgeBuySz, pendingHedgeSellSz);
 

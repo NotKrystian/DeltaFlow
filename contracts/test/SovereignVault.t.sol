@@ -172,6 +172,12 @@ contract SovereignVaultTest is Test {
         vault.setMinPerpHedgeSz(100);
     }
 
+    function test_setUseMarkBasedMinHedgeSz_onlyStrategist() public {
+        vm.prank(user);
+        vm.expectRevert(SovereignVault.OnlyStrategist.selector);
+        vault.setUseMarkBasedMinHedgeSz(true);
+    }
+
     function test_setMinPerpHedgeSz() public {
         vault.setMinPerpHedgeSz(42);
         assertEq(vault.minPerpHedgeSz(), 42);
@@ -525,14 +531,18 @@ contract VaultRecallTest is Test {
 
     /// @notice Test vault lock period is respected
     function test_recallFails_whenLocked() public {
-        // Force vault equity with future lock timestamp
+        // `INSUFFICIENT_BUFFER` requires internalBalance + totalAllocatedUSDC >= amount before any Core recall.
+        // Allocate first so recall path runs and can hit the lock (not the buffer check).
+        deal(usdcAddress, address(vault), 1100e6);
+        vault.allocate(TEST_VAULT, 1000e6);
+
         uint64 lockedUntil = uint64((block.timestamp + 1 days) * 1000);
         CoreSimulatorLib.forceVaultEquity(address(vault), TEST_VAULT, 1000e6, lockedUntil);
 
         console.log("Lock until:", lockedUntil);
         console.log("Current time (ms):", block.timestamp * 1000);
 
-        // Try to send more than internal balance - should revert due to lock
+        // Try to send more than internal balance - should revert due to lock on withdraw
         vm.prank(address(pool));
         vm.expectRevert(
             abi.encodeWithSelector(CoreWriterLib.CoreWriterLib__StillLockedUntilTimestamp.selector, lockedUntil)

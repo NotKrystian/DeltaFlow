@@ -48,7 +48,7 @@ When **`DEPLOY_DELTAFLOW_FEE=true`** (default in [`deploy/testnet.env.example`](
 
 **Separate concern:** the **`SovereignPool`** / **`SovereignVault`** stack binds **`hedgePerpAssetIndex`** to the Hyperliquid **perp** universe index for the base asset (IOC hedges after each swap). That **must** be a real perp id when you deploy the **external-vault** market; **`uint32.max`** is **invalid** for that path and **`AmmDeployBase`** will revert when creating the pool.
 
-Use HL metadata / docs for the correct **perp** index for PURR (or WETH) on your network, and set **`PERP_INDEX_PURR`** / **`PERP_INDEX_WETH`** accordingly. Optional **`MIN_PERP_HEDGE_SZ`** (HL **`sz`** units): **escrow `tokenOut`** until the hedge bucket can fill a minimum IOC, then pay queued users together — see [Current implementation](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue).
+Use HL metadata / docs for the correct **perp** index for PURR (or **ETH** for the WETH spot base — there is no “WETH” perp ticker), and set **`PERP_INDEX_PURR`** / **`PERP_INDEX_WETH`** accordingly. Optional hedge batching via **`USE_MARK_MIN_HEDGE_SZ`** (mark + ~$10 notional) and **`MIN_PERP_HEDGE_SZ_FLOOR`**: **escrow `tokenOut`** until the batch threshold, **net** opposite flow against the queue, then IOC — see [Current implementation](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue).
 
 ## Commands
 
