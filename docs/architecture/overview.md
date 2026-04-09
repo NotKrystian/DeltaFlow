@@ -8,10 +8,10 @@ DeltaFlow is designed around **spot-index pricing**, **vault-held liquidity**, *
 
 ### Hedging model (intent)
 
-- **Perpetuals** are the primary hedge for **vault balance exposure** when users trade against the sovereign pool: when the pool pays out base to a taker, the system aims to **add perp exposure** in the same direction so vault P&L is not purely spot inventory; when flow reverses, **unwind** that perp leg.
-- **HyperCore spot** is used when **EVM inventory is insufficient** to fill a swap: acquire the shortfall on spot, **bridge back to EVM**, and deliver to the user alongside existing vault inventory—while still layering **perp** protection against the net risk from liquidity leaving the vault.
+- **Perpetuals** — For **external-vault** pools, **`SovereignPool`** calls **`SovereignVault.processSwapHedge`** **before** paying **`tokenOut`**. The vault sends **perp IOC** orders via **CoreWriter** sized to the **base (PURR) leg**. With **`minPerpHedgeSz > 0`**, sub-minimum hedges **escrow** swap outputs until the bucket reaches the minimum, then **IOC + batch payout** in one tx. The pool’s **`hedgePerpAssetIndex`** (immutable) must match the vault’s index or **swaps revert**. See [Current implementation — On-chain per-swap perp hedge](current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue).
+- **HyperCore spot** — Used when **EVM inventory is insufficient** to fill a swap (`sendTokensToRecipient`), and via **`HedgeEscrow`** for user-initiated **spot** limit orders + claims (separate from vault per-swap perp hedging).
 
-On-chain today, **`HedgeEscrow`** exposes **CoreWriter** spot limit orders + claim flows; additional automation (e.g. strategist or off-chain workers tying **every** pool fill to perp legs) layers on top of the same addresses and backend surfaces — see [Current implementation](current-implementation.md).
+On-chain today, **`HedgeEscrow`** exposes **CoreWriter spot** limit orders + claim flows; **vault per-swap perp hedging** is implemented in **`SovereignVault`** — see [Current implementation](current-implementation.md).
 
 ```mermaid
 flowchart LR
@@ -41,8 +41,8 @@ flowchart LR
 | **SovereignALM** | Quotes **USDC vs base** from the Hyperliquid **spot index** (`PrecompileLib`); enforces vault liquidity for `tokenOut`. |
 | **DeltaFlowCompositeFeeModule** + **FeeSurplus** + **DeltaFlowRiskEngine** | Default in **`DeployAll`** when **`DEPLOY_DELTAFLOW_FEE=true`**: multi-component fee + surplus routing + risk gate. |
 | **BalanceSeekingSwapFeeModuleV3** | Alternative `ISwapFeeModule` when **`DEPLOY_DELTAFLOW_FEE=false`**: **base fee + imbalance** vs spot-valued inventory. |
-| **SovereignVault** | LP token (`DFLP`), deposits/withdrawals, **USDC** bridge/allocate/deallocate via **CoreWriter**, `sendTokensToRecipient` for swaps. |
-| **HedgeEscrow** (always deployed per stack) | CoreWriter spot orders + claim path; **no** API wallet execution. Perp + full fill pipeline are product targets layered with vault/strategy. |
+| **SovereignVault** | LP token (`DFLP`), deposits/withdrawals, **USDC** bridge/allocate/deallocate via **CoreWriter**, `sendTokensToRecipient` / **`processSwapHedge`** (perp IOC + optional escrow + **`sz`** batch queue). |
+| **HedgeEscrow** (always deployed per stack) | CoreWriter **spot** orders + claim path; **no** API wallet execution. Distinct from vault **per-swap perp** hedge. |
 
 ## HyperCore
 
@@ -57,4 +57,4 @@ Oracle, mark, BBO, spot balance, and **CoreWriter** precompiles sit under Hyperl
 
 ## Roadmap / extended design
 
-Additional modules (for example **circuit breaker** or a fuller **on-chain hedge FSM**) may be layered beside the default stack; the **DeltaFlow** fee and risk contracts under `contracts/src/deltaflow/` are the current multi-component fee path — see [current implementation](current-implementation.md).
+Additional modules (for example **circuit breaker** or richer **netting** across buy/sell hedge queues) may be layered beside the default stack; the **DeltaFlow** fee and risk contracts under `contracts/src/deltaflow/` are the current multi-component fee path — see [current implementation](current-implementation.md).

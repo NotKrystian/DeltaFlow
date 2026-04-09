@@ -1,6 +1,8 @@
 # Backend API
 
-The FastAPI app in **`backend/server.py`** streams **`Swap`** logs from **`WATCH_POOL`** and polls **`HedgeEscrow`** + Core precompiles so the UI can show **claimable** hedges. **`HEDGE_ESCROW`** and **`PURR_TOKEN_INDEX`** are **required**. **Hyperliquid API wallets / `Exchange` are not used** for hedge execution — orders are placed on-chain via **CoreWriter** inside **`HedgeEscrow.sol`**.
+The FastAPI app in **`backend/server.py`** streams **`Swap`** logs from **`WATCH_POOL`** and polls **`HedgeEscrow`** + Core precompiles so the UI can show **claimable** **spot** hedges. **`HEDGE_ESCROW`** and **`PURR_TOKEN_INDEX`** are **required**. **Hyperliquid API wallets / `Exchange` are not used** for that path — orders are placed on-chain via **CoreWriter** inside **`HedgeEscrow.sol`**.
+
+**Vault per-swap perp hedging** runs entirely **on-chain** in **`SovereignVault.processSwapHedge`** (before **`tokenOut`**, with optional escrow when **`minPerpHedgeSz > 0`**); the backend does not submit those orders. See [Current implementation](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue).
 
 ```mermaid
 flowchart LR

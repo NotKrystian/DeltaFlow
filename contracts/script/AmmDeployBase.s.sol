@@ -309,6 +309,11 @@ abstract contract AmmDeployBase is Script {
         if (p.dfPerpIndex != type(uint32).max) {
             vault.setHedgePerpAsset(p.dfPerpIndex);
             console2.log("HEDGE_PERP_ASSET_INDEX (swap hedge):", p.dfPerpIndex);
+            uint64 minHedgeSz = uint64(vm.envOr("MIN_PERP_HEDGE_SZ", uint256(0)));
+            if (minHedgeSz > 0) {
+                vault.setMinPerpHedgeSz(minHedgeSz);
+                console2.log("MIN_PERP_HEDGE_SZ (batched hedge queue):", minHedgeSz);
+            }
         }
 
         uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);

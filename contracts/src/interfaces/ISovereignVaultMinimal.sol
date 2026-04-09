@@ -24,8 +24,18 @@ interface ISovereignVaultMinimal {
 
     function sendTokensToRecipient(address _token, address _recipient, uint256 _amount) external;
 
-    /// @notice After each swap, the pool requests a perp hedge sized to the PURR leg (disabled when perp index is 0).
-    /// @param vaultPurrOut If true, the vault paid PURR to the user (hedge: buy perp). If false, the vault received PURR (hedge: sell perp).
-    /// @param purrAmountWei PURR amount in EVM wei for the swap leg (output or input filled).
-    function hedgeAfterSwap(bool vaultPurrOut, uint256 purrAmountWei) external;
+    /// @notice Hedge sizing + optional payout escrow when `minPerpHedgeSz > 0`. Pool calls before sending `tokenOut`.
+    /// @param vaultPurrOut If true, the vault would pay PURR (hedge: buy perp). If false, vault receives PURR (hedge: sell perp).
+    /// @param purrAmountWei PURR leg in EVM wei for hedge sizing.
+    /// @param swapTokenOut Output token for this swap.
+    /// @param recipient Swap output recipient.
+    /// @param amountOut Output amount quoted by the ALM.
+    /// @return poolShouldSendTokenOut If true, the pool must call `sendTokensToRecipient` for this swap. If false, the vault escrowed the payout or already paid in a batch flush.
+    function processSwapHedge(
+        bool vaultPurrOut,
+        uint256 purrAmountWei,
+        address swapTokenOut,
+        address recipient,
+        uint256 amountOut
+    ) external returns (bool poolShouldSendTokenOut);
 }

@@ -144,26 +144,37 @@ contract SovereignVaultTest is Test {
         vault.setAuthorizedPool(user, true);
     }
 
-    function test_hedgeAfterSwap_noopWhenDisabled() public {
+    function test_processSwapHedge_noopWhenDisabled() public {
         vm.prank(address(pool));
-        vault.hedgeAfterSwap(true, 1e5);
+        assertTrue(vault.processSwapHedge(true, 1e5, address(purr), address(this), 1e5));
     }
 
-    function test_hedgeAfterSwap_noopWhenZeroAmount() public {
+    function test_processSwapHedge_noopWhenZeroAmount() public {
         vault.setHedgePerpAsset(1);
         vm.prank(address(pool));
-        vault.hedgeAfterSwap(true, 0);
+        assertTrue(vault.processSwapHedge(true, 0, address(purr), address(this), 0));
     }
 
-    function test_hedgeAfterSwap_onlyAuthorizedPool() public {
+    function test_processSwapHedge_onlyAuthorizedPool() public {
         vm.expectRevert(SovereignVault.OnlyAuthorizedPool.selector);
-        vault.hedgeAfterSwap(true, 1e5);
+        vault.processSwapHedge(true, 1e5, address(purr), address(this), 1e5);
     }
 
     function test_setHedgePerpAsset_onlyStrategist() public {
         vm.prank(user);
         vm.expectRevert(SovereignVault.OnlyStrategist.selector);
         vault.setHedgePerpAsset(1);
+    }
+
+    function test_setMinPerpHedgeSz_onlyStrategist() public {
+        vm.prank(user);
+        vm.expectRevert(SovereignVault.OnlyStrategist.selector);
+        vault.setMinPerpHedgeSz(100);
+    }
+
+    function test_setMinPerpHedgeSz() public {
+        vault.setMinPerpHedgeSz(42);
+        assertEq(vault.minPerpHedgeSz(), 42);
     }
 
     function test_getTokensForPool() public view {

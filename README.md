@@ -62,19 +62,13 @@ USDC/PURR * spot price
 
 ## Delta Liquidity Hedging Operations
 
-This module is enabled by an API off-chain wallet which controlls the operations of the vault on spot and perpetual markets on HyperCore Exchange.
+**On-chain (vault-backed pools):** Before **`tokenOut`**, **`SovereignVault.processSwapHedge`** runs: **HyperCore perp** IOC via **CoreWriter**, sized to the PURR leg. The pool and vault share **`hedgePerpAssetIndex`**; misconfiguration reverts swaps. With **`minPerpHedgeSz > 0`**, sub-minimum hedges **escrow** the quoted output until the hedge bucket reaches the HL minimum, then **one IOC** pays **all** queued recipients in that batch (a large swap can trigger the batch). With **`minPerpHedgeSz == 0`**, each swap gets an immediate IOC and immediate **`tokenOut`**. Full detail: [`docs/architecture/current-implementation.md`](./docs/architecture/current-implementation.md).
 
-To protect and hedge against deviations in liquidity in our vault, we initiate spot orders to buy PURR tokens when there is excess USDC reserves and perpetual short orders to short PURR when there is excess PURR in the reserves.
+**Optional API wallet / off-chain:** A strategist can still use an approved agent for additional spot or perp operations on HyperCore beyond this automatic path.
 
-This ensures the best price for our customers on their swaps as well as minimizes our downside for any offsets in our liquidity.
+**HedgeEscrow (user spot flow):** Users can open separate **spot** hedges via **`HedgeEscrow`** (CoreWriter spot limit orders). That path is distinct from the vault’s per-swap **perp** hedge.
 
-This module operates on the same equation as the swap-fee:
-
-```
-USDC/PURR * spot price
-```
-
-This equation provides our liquidity pool with swap offers as close to the spot price as possible.
+Inventory and fee dynamics still follow the same high-level goal as the swap-fee module—keep quoted prices aligned with spot—documented in [`docs/`](./docs/).
 
 ### Frontend
 
@@ -87,7 +81,7 @@ pnpm dev
 
 **Chain:** Hyperliquid **testnet** HyperEVM (**998**). Authoritative env template: [`deploy/testnet.env.example`](./deploy/testnet.env.example). Copy it to the repo root as **`.env`** and fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex.s.sol`](./contracts/script/ReadSpotIndex.s.sol)), plus factory/verifier addresses required by your deployment. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (deploys **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, **`DeltaFlowCompositeFeeModule`**); set **`false`** for **`BalanceSeekingSwapFeeModuleV3`** only.
 
-**Indices and asset ids** (`10000 + spotIndex`, token indices, perp vs spot): [`docs/deployment/testnet-asset-ids.md`](./docs/deployment/testnet-asset-ids.md).
+**Indices and asset ids** (`10000 + spotIndex`, token indices, perp vs spot): [`docs/deployment/testnet-asset-ids.md`](./docs/deployment/testnet-asset-ids.md). For **`DeployAll`** with an external vault, set **`PERP_INDEX_PURR`** (or WETH) to the real **perp** index for the base asset; see [`deploy/testnet.env.example`](./deploy/testnet.env.example) and [`docs/deployment/pairs-and-scripts.md`](./docs/deployment/pairs-and-scripts.md).
 
 ## Deployment
 

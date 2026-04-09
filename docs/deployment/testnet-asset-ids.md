@@ -44,6 +44,12 @@ When **`DEPLOY_DELTAFLOW_FEE=true`** (default in [`deploy/testnet.env.example`](
 - **`PERP_INDEX_*`** — Set to **`4294967295`** (`2^32 - 1`, `type(uint32).max`) to **disable** perp leg reads in the composite fee module if you do not rely on perp metadata for that pair.
 - **`SPOT_ASSET_BBO_*`** — **`0`** means “derive BBO asset as **`10000 + SPOT_INDEX_*`**” (same rule as above). Override only if you intentionally point BBO to another asset id.
 
+## Vault + pool on-chain perp hedge (`PERP_INDEX_*` for `DeployAll`)
+
+**Separate concern:** the **`SovereignPool`** / **`SovereignVault`** stack binds **`hedgePerpAssetIndex`** to the Hyperliquid **perp** universe index for the base asset (IOC hedges after each swap). That **must** be a real perp id when you deploy the **external-vault** market; **`uint32.max`** is **invalid** for that path and **`AmmDeployBase`** will revert when creating the pool.
+
+Use HL metadata / docs for the correct **perp** index for PURR (or WETH) on your network, and set **`PERP_INDEX_PURR`** / **`PERP_INDEX_WETH`** accordingly. Optional **`MIN_PERP_HEDGE_SZ`** (HL **`sz`** units): **escrow `tokenOut`** until the hedge bucket can fill a minimum IOC, then pay queued users together — see [Current implementation](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue).
+
 ## Commands
 
 **Discover indices for TOKEN0 / TOKEN1:**
@@ -59,6 +65,7 @@ Then copy **`SPOT_INDEX_PURR`** (and **`SPOT_INDEX_WETH`** for WETH) into your r
 
 ## Related
 
+- [Current implementation — per-swap perp hedge & queue](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue)
 - [Pairs and deployment scripts](pairs-and-scripts.md)
 - [Quick start](../getting-started/quick-start.md)
 - [Backend API](../operations/backend-api.md)

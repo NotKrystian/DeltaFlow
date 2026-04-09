@@ -814,8 +814,26 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
             _sovereignOracleModule.writeOracleUpdate(_swapParams.isZeroToOne, amountInUsed, effectiveFee, amountOut);
         }
 
-        // Transfer `amountOut to recipient
-        _handleTokenOutTransferOnSwap(IERC20(_swapParams.swapTokenOut), _swapParams.recipient, amountOut);
+        // Token out: vault may escrow until hedge batch reaches minPerpHedgeSz (see SovereignVault.processSwapHedge)
+        bool poolShouldSendTokenOut = true;
+        if (vault != address(this)) {
+            address purrToken = ISovereignVaultMinimal(vault).purr();
+            bool vaultPurrOut = (_swapParams.swapTokenOut == purrToken);
+            uint256 purrWei;
+            if (vaultPurrOut) {
+                purrWei = amountOut;
+            } else if (address(swapCache.tokenInPool) == purrToken) {
+                purrWei = liquidityQuote.amountInFilled;
+            }
+            if (purrWei > 0) {
+                poolShouldSendTokenOut = ISovereignVaultMinimal(vault).processSwapHedge(
+                    vaultPurrOut, purrWei, _swapParams.swapTokenOut, _swapParams.recipient, amountOut
+                );
+            }
+        }
+        if (poolShouldSendTokenOut) {
+            _handleTokenOutTransferOnSwap(IERC20(_swapParams.swapTokenOut), _swapParams.recipient, amountOut);
+        }
 
         if (vault != address(this)) {
             uint256 usdcAfter = IERC20(usdcToken).balanceOf(vault);
@@ -833,21 +851,6 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
         // Perform post-swap callback to liquidity module if necessary
         if (liquidityQuote.isCallbackOnSwap) {
             ISovereignALM(alm).onSwapCallback(_swapParams.isZeroToOne, amountInUsed, amountOut);
-        }
-
-        // Per-swap perp hedge (vault uses CoreWriter; disabled when hedgePerpAssetIndex == 0)
-        if (vault != address(this)) {
-            address purrToken = ISovereignVaultMinimal(vault).purr();
-            bool vaultPurrOut = (_swapParams.swapTokenOut == purrToken);
-            uint256 purrWei;
-            if (vaultPurrOut) {
-                purrWei = amountOut;
-            } else if (address(swapCache.tokenInPool) == purrToken) {
-                purrWei = liquidityQuote.amountInFilled;
-            }
-            if (purrWei > 0) {
-                ISovereignVaultMinimal(vault).hedgeAfterSwap(vaultPurrOut, purrWei);
-            }
         }
 
         emit Swap(msg.sender, _swapParams.isZeroToOne, amountInUsed, effectiveFee, amountOut, usdcDelta);

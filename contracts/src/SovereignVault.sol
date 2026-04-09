@@ -56,6 +56,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     error LP__InsufficientUsdcOut(uint256 got, uint256 min);
     error LP__InsufficientPurrOut(uint256 got, uint256 min);
     error LP__InsufficientEvmUsdc(uint256 available, uint256 needed);
+    error HedgeBatchTooLarge();
 
     event LiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 purrAmount, uint256 shares);
     event LiquidityRemoved(address indexed provider, uint256 usdcOut, uint256 purrOut, uint256 shares);
@@ -64,11 +65,36 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     event CoreVaultMoved(address indexed coreVault, bool isDeposit, uint256 amount);
     event CoreAllocationsSynced(uint256 oldTotal, uint256 newTotal);
     event SwapHedgeExecuted(uint32 indexed perpAsset, bool vaultPurrOut, uint256 purrAmountWei, uint64 sz);
+    /// @notice Emitted when a slice is merged into the perp hedge queue (HL `sz` units).
+    event HedgeSliceQueued(bool indexed buyPerp, uint64 sz, uint256 pendingBuySz, uint256 pendingSellSz);
+    /// @notice Emitted when a batch IOC is sent (one or many swaps combined).
+    event HedgeBatchExecuted(uint32 indexed perpAsset, bool indexed buyPerp, uint256 totalSz);
 
     mapping(address => uint256) public allocatedToCoreVault;
 
     /// @notice HyperCore perp asset index for swap hedges (PURR perp). 0 = disabled (no CoreWriter call).
     uint32 public hedgePerpAssetIndex;
+
+    /// @notice Minimum HL perp order size (`sz` units) before sending an IOC. 0 = send one IOC per swap (no queue).
+    uint64 public minPerpHedgeSz;
+
+    /// @notice Pending hedge size (HL `sz`) for long-perp hedges (vault paid PURR on swaps).
+    uint256 public pendingHedgeBuySz;
+
+    /// @notice Pending hedge size (HL `sz`) for short-perp hedges (vault received PURR on swaps).
+    uint256 public pendingHedgeSellSz;
+
+    /// @dev Swap outputs waiting for a hedge batch when `minPerpHedgeSz > 0` and the hedge bucket is still below minimum.
+    struct HedgePayout {
+        address recipient;
+        address token;
+        uint256 amount;
+    }
+
+    HedgePayout[] private _pendingPayoutsBuy;
+    HedgePayout[] private _pendingPayoutsSell;
+
+    event HedgePayoutEscrowed(address indexed recipient, address indexed token, uint256 amount, bool buyPerpSide);
 
     constructor(address _usdc, address _purr) ERC20("DeltaFlow LP", "DFLP") {
         strategist = msg.sender;
@@ -104,25 +130,104 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         hedgePerpAssetIndex = perpAssetIndex;
     }
 
+    /// @notice HL minimum `sz` for batched perp IOCs. Set from exchange metadata; 0 disables batching (hedge each swap immediately).
+    function setMinPerpHedgeSz(uint64 minSz) external onlyStrategist {
+        minPerpHedgeSz = minSz;
+    }
+
+    function _placePerpIoc(uint32 perpIx, bool isBuy, uint64 sz) internal {
+        uint64 limitPx = isBuy ? type(uint64).max : 0;
+        uint128 cloid = uint128(uint256(keccak256(abi.encodePacked(block.number, perpIx, isBuy, sz, address(this)))));
+        CoreWriterLib.placeLimitOrder(
+            perpIx, isBuy, limitPx, sz, false, HLConstants.LIMIT_ORDER_TIF_IOC, cloid
+        );
+    }
+
+    function _flushBuyAndPayouts(uint32 perpIx) internal {
+        uint256 batch = pendingHedgeBuySz;
+        pendingHedgeBuySz = 0;
+        if (batch > type(uint64).max) revert HedgeBatchTooLarge();
+        _placePerpIoc(perpIx, true, uint64(batch));
+        emit HedgeBatchExecuted(perpIx, true, batch);
+        uint256 n = _pendingPayoutsBuy.length;
+        for (uint256 i = 0; i < n; i++) {
+            HedgePayout memory p = _pendingPayoutsBuy[i];
+            _sendTokensToRecipient(p.token, p.recipient, p.amount);
+        }
+        delete _pendingPayoutsBuy;
+    }
+
+    function _flushSellAndPayouts(uint32 perpIx) internal {
+        uint256 batch = pendingHedgeSellSz;
+        pendingHedgeSellSz = 0;
+        if (batch > type(uint64).max) revert HedgeBatchTooLarge();
+        _placePerpIoc(perpIx, false, uint64(batch));
+        emit HedgeBatchExecuted(perpIx, false, batch);
+        uint256 n = _pendingPayoutsSell.length;
+        for (uint256 i = 0; i < n; i++) {
+            HedgePayout memory p = _pendingPayoutsSell[i];
+            _sendTokensToRecipient(p.token, p.recipient, p.amount);
+        }
+        delete _pendingPayoutsSell;
+    }
+
     /// @inheritdoc ISovereignVaultMinimal
-    function hedgeAfterSwap(bool vaultPurrOut, uint256 purrAmountWei) external onlyAuthorizedPool {
+    function processSwapHedge(
+        bool vaultPurrOut,
+        uint256 purrAmountWei,
+        address swapTokenOut,
+        address recipient,
+        uint256 amountOut
+    ) external onlyAuthorizedPool returns (bool poolShouldSendTokenOut) {
         uint32 perpIx = hedgePerpAssetIndex;
-        if (perpIx == 0 || purrAmountWei == 0) return;
+        if (perpIx == 0 || purrAmountWei == 0) return true;
 
         uint64 tokenIdx = PrecompileLib.getTokenIndex(purr);
         uint64 weiAmt = HLConversions.evmToWei(tokenIdx, purrAmountWei);
         uint64 sz = HLConversions.weiToSz(tokenIdx, weiAmt);
-        if (sz == 0) return;
+        if (sz == 0) return true;
 
         bool isBuy = vaultPurrOut;
-        uint64 limitPx = isBuy ? type(uint64).max : 0;
-        uint128 cloid = uint128(uint256(keccak256(abi.encodePacked(block.number, purrAmountWei, vaultPurrOut, msg.sender))));
 
-        CoreWriterLib.placeLimitOrder(
-            perpIx, isBuy, limitPx, sz, false, HLConstants.LIMIT_ORDER_TIF_IOC, cloid
-        );
+        if (minPerpHedgeSz == 0) {
+            _placePerpIoc(perpIx, isBuy, sz);
+            emit SwapHedgeExecuted(perpIx, vaultPurrOut, purrAmountWei, sz);
+            return true;
+        }
 
-        emit SwapHedgeExecuted(perpIx, vaultPurrOut, purrAmountWei, sz);
+        uint256 thresh = uint256(minPerpHedgeSz);
+
+        if (isBuy) {
+            pendingHedgeBuySz += uint256(sz);
+            _pendingPayoutsBuy.push(HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut}));
+            emit HedgePayoutEscrowed(recipient, swapTokenOut, amountOut, true);
+            emit HedgeSliceQueued(true, sz, pendingHedgeBuySz, pendingHedgeSellSz);
+
+            if (pendingHedgeBuySz < thresh) {
+                return false;
+            }
+            _flushBuyAndPayouts(perpIx);
+            return false;
+        } else {
+            pendingHedgeSellSz += uint256(sz);
+            _pendingPayoutsSell.push(HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut}));
+            emit HedgePayoutEscrowed(recipient, swapTokenOut, amountOut, false);
+            emit HedgeSliceQueued(false, sz, pendingHedgeBuySz, pendingHedgeSellSz);
+
+            if (pendingHedgeSellSz < thresh) {
+                return false;
+            }
+            _flushSellAndPayouts(perpIx);
+            return false;
+        }
+    }
+
+    function pendingPayoutsBuyLength() external view returns (uint256) {
+        return _pendingPayoutsBuy.length;
+    }
+
+    function pendingPayoutsSellLength() external view returns (uint256) {
+        return _pendingPayoutsSell.length;
     }
 
     function _toU64(uint256 x) internal pure returns (uint64) {
@@ -156,8 +261,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         return tokenReserves;
     }
 
-    // Sends tokens to recipient, withdrawing from lending market if needed
-    function sendTokensToRecipient(address _token, address recipient, uint256 _amount) external onlyAuthorizedPool {
+    /// @dev Shared by `sendTokensToRecipient` and batched hedge payout flushes.
+    function _sendTokensToRecipient(address _token, address recipient, uint256 _amount) internal {
         if (_amount == 0) return;
 
         IERC20 token = IERC20(_token);
@@ -177,6 +282,11 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             if (finalBalance < _amount) revert InsufficientFundsAfterWithdraw();
             IERC20(usdc).safeTransfer(recipient, _amount);
         }
+    }
+
+    // Sends tokens to recipient, withdrawing from lending market if needed
+    function sendTokensToRecipient(address _token, address recipient, uint256 _amount) external onlyAuthorizedPool {
+        _sendTokensToRecipient(_token, recipient, _amount);
     }
 
     function changeDefaultVault(address newVault) external onlyStrategist {

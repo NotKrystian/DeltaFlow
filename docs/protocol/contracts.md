@@ -24,9 +24,9 @@ flowchart LR
 
 ## Core (this repo)
 
-- **SovereignPool** — Swaps and pool configuration; calls the swap fee module (if set), then the ALM, then settles tokens and fees.
+- **SovereignPool** — Swaps and pool configuration; calls the swap fee module (if set), then the ALM, then settles tokens and fees. When **`sovereignVault`** is an **external** contract, the constructor sets **`hedgePerpAssetIndex`**; **`swap`** reverts unless **`vault.hedgePerpAssetIndex()`** matches and is non-zero. Before **`tokenOut`**, the pool calls **`vault.processSwapHedge`**; if it returns **`true`**, the pool pays **`amountOut`** via **`sendTokensToRecipient`** (otherwise the vault escrowed output or paid in a flush).
 - **SovereignALM** — **USDC/base** quotes from **`PrecompileLib.normalizedSpotPx`**; reverts if the vault cannot deliver **`tokenOut`** (+ buffer).
-- **SovereignVault** — **ERC-20 LP** shares, `depositLP` / `withdrawLP`, **USDC** ↔ **HyperCore** via **`CoreWriterLib`**, **`sendTokensToRecipient`** for swap payouts.
+- **SovereignVault** — **ERC-20 LP** shares, `depositLP` / `withdrawLP`, **USDC** ↔ **HyperCore** via **`CoreWriterLib`**, **`sendTokensToRecipient`**. **`processSwapHedge`** (pool-only): **perp IOC** via **`CoreWriterLib.placeLimitOrder`**, optional **payout escrow** when **`minPerpHedgeSz > 0`** — see [batch queue + escrow](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue).
 
 ## Swap fees
 
@@ -38,7 +38,7 @@ If no fee module is configured, the pool uses its **default swap fee bips** (see
 
 ## Hedge escrow
 
-- **HedgeEscrow** — **Deployed with every market stack**; CoreWriter spot orders + claim path for the **base** token configured at deploy. Perp hedging is layered via strategy / automation using the same risk surfaces.
+- **HedgeEscrow** — **Deployed with every market stack**; CoreWriter **spot** orders + claim path for the **base** token configured at deploy. **Vault per-swap perp** hedging is separate (see **SovereignVault** above).
 
 ## Source of truth
 

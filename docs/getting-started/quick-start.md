@@ -38,7 +38,9 @@ forge script contracts/script/DeployAll.s.sol:DeployAll \
   --broadcast -vvvv
 ```
 
-Set env vars as required by `DeployAll` (`PRIVATE_KEY`, `USDC`, `PURR`, `POOL_MANAGER`, `SPOT_INDEX_PURR`, `INVERT_PURR_PX`, fee bips, etc.). Optional: `SKIP_HL_AGENT=true`, `RAW_PX_SCALE` (defaults to `1e8`), `DEPLOY_USDC_WETH=true` plus `WETH`, `SPOT_INDEX_WETH`, `INVERT_WETH_PX` for a second stack in one broadcast. **`HedgeEscrow`** is always deployed per stack.
+Set env vars as required by `DeployAll` (`PRIVATE_KEY`, `USDC`, `PURR`, `POOL_MANAGER`, `SPOT_INDEX_PURR`, `INVERT_PURR_PX`, fee bips, etc.). For the **standard external-vault stack** (on-chain per-swap perp hedge), set **`PERP_INDEX_PURR`** to the Hyperliquid **perp** index for PURR (not `uint32.max`). Optional **`MIN_PERP_HEDGE_SZ`** escrows **`tokenOut`** until the hedge bucket reaches that HL **`sz`** minimum, then pays queued users + IOC in one step; omit or **`0`** for immediate payout each swap. Optional: `SKIP_HL_AGENT=true`, `RAW_PX_SCALE` (defaults to `1e8`), `DEPLOY_USDC_WETH=true` plus `WETH`, `SPOT_INDEX_WETH`, `INVERT_WETH_PX`, `PERP_INDEX_WETH` for a second stack in one broadcast. **`HedgeEscrow`** is always deployed per stack.
+
+See [Current implementation — per-swap hedge & queue](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue) and [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).
 
 After **`--broadcast`**, run **`./scripts/deploy_all_testnet.sh`** (deploy + sync) or **`python3 scripts/sync_env_from_broadcast.py`** to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from `broadcast/DeployAll.s.sol/998/run-latest.json` (set **`RPC_URL`** so `cast` can fill **`PURR_TOKEN_INDEX`** when HedgeEscrow is deployed).
 
