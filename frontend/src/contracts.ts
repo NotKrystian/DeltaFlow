@@ -20,8 +20,10 @@ export const ADDRESSES = {
   SWAP_FEE_MODULE: (process.env.NEXT_PUBLIC_SWAP_FEE_MODULE ??
     "0xA0Fa62675a8Db6814510eEF716c67021F249a5d6") as `0x${string}`,
 
-  USDC: "0x2B3370eE501B4a559b57D449569354196457D8Ab" as const,
-  PURR: "0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57" as const,
+  USDC: (process.env.NEXT_PUBLIC_USDC ??
+    "0x2B3370eE501B4a559b57D449569354196457D8Ab") as `0x${string}`,
+  PURR: (process.env.NEXT_PUBLIC_PURR ??
+    "0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57") as `0x${string}`,
   WETH: (process.env.NEXT_PUBLIC_WETH ??
     "0x5a1A1339ad9e52B7a4dF78452D5c18e8690746f3") as `0x${string}`,
 

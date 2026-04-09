@@ -1,5 +1,5 @@
 """
-DeltaFlow backend: EVM swap log stream + HedgeEscrow status via Core precompiles.
+DeltaFlow backend: EVM swap log polling + HedgeEscrow status via Core precompiles.
 
 Hedges execute **only** through on-chain CoreWriter (see `HedgeEscrow.sol`). This service
 does **not** use Hyperliquid API wallets / `Exchange` for execution. It polls
@@ -19,14 +19,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from web3 import Web3
-import websockets
 
 load_dotenv()
 
 # -----------------------------
 # ENV / CONFIG
 # -----------------------------
-ALCHEMY_WSS_URL = os.getenv("ALCHEMY_WSS_URL")
 EVM_RPC_HTTP_URL = os.getenv("EVM_RPC_HTTP_URL")
 
 SOVEREIGN_VAULT_ADDRESS = os.getenv("SOVEREIGN_VAULT")
@@ -39,6 +37,10 @@ _PURR_TI = os.getenv("PURR_TOKEN_INDEX")
 
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 ESCROW_POLL_INTERVAL_S = float(os.getenv("ESCROW_POLL_INTERVAL_S", "4.0"))
+SWAP_POLL_INTERVAL_S = float(os.getenv("SWAP_POLL_INTERVAL_S", "30.0"))
+# Optional backfill on first poll only (blocks behind head); 0 = start from current head only
+SWAP_LOG_LOOKBACK_BLOCKS = int(os.getenv("SWAP_LOG_LOOKBACK_BLOCKS", "0"))
+MAX_GET_LOGS_BLOCK_RANGE = int(os.getenv("MAX_GET_LOGS_BLOCK_RANGE", "2000"))
 
 MAX_EVENTS_STORED = int(os.getenv("MAX_EVENTS_STORED", "1000"))
 
@@ -47,7 +49,6 @@ SPOT_BALANCE_PRECOMPILE = Web3.to_checksum_address(
 )
 
 required = {
-    "ALCHEMY_WSS_URL": ALCHEMY_WSS_URL,
     "EVM_RPC_HTTP_URL": EVM_RPC_HTTP_URL,
     "SOVEREIGN_VAULT_ADDRESS": SOVEREIGN_VAULT_ADDRESS,
     "USDC_ADDRESS": USDC_ADDRESS,
@@ -132,6 +133,13 @@ CHAIN_ID = int(os.getenv("CHAIN_ID") or w3_http.eth.chain_id)
 
 print("[boot] CHAIN_ID =", CHAIN_ID, flush=True)
 print("[boot] HEDGE_ESCROW =", HEDGE_ESCROW_ADDRESS, "PURR_TOKEN_INDEX =", PURR_TOKEN_INDEX, flush=True)
+print(
+    "[boot] swap poll: interval_s=",
+    SWAP_POLL_INTERVAL_S,
+    "lookback_blocks=",
+    SWAP_LOG_LOOKBACK_BLOCKS,
+    flush=True,
+)
 
 # -----------------------------
 # App state
@@ -139,6 +147,8 @@ print("[boot] HEDGE_ESCROW =", HEDGE_ESCROW_ADDRESS, "PURR_TOKEN_INDEX =", PURR_
 state_lock = asyncio.Lock()
 CLIENTS: Set[WebSocket] = set()
 EVENTS: List[Dict[str, Any]] = []
+# Last chain block fully scanned for Swap logs (HTTP polling); None until first poll initializes
+last_swap_block_processed: Optional[int] = None
 
 # Latest escrow poll snapshot (id -> row)
 escrow_claimable: Dict[int, Dict[str, Any]] = {}
@@ -169,28 +179,53 @@ async def debug_emit(event: str, data: Dict[str, Any]) -> None:
     await broadcast(msg)
 
 
-def decode_swap_log(log: dict) -> Dict[str, Any]:
-    sender_topic = log["topics"][1]
-    sender = Web3.to_checksum_address("0x" + sender_topic[-40:])
+def _topic1_to_address(topic: Any) -> str:
+    """Decode indexed address from Swap event topic (handles str / HexBytes)."""
+    if isinstance(topic, (bytes, bytearray)):
+        return Web3.to_checksum_address(bytes(topic)[-20:])
+    if isinstance(topic, str):
+        h = topic[2:] if topic.startswith("0x") else topic
+        return Web3.to_checksum_address("0x" + h[-40:])
+    hx = topic.hex()
+    if hx.startswith("0x"):
+        hx = hx[2:]
+    return Web3.to_checksum_address("0x" + hx[-40:])
 
-    data_bytes = Web3.to_bytes(hexstr=log["data"])
+
+def decode_swap_log(log: dict) -> Dict[str, Any]:
+    sender = _topic1_to_address(log["topics"][1])
+
+    raw_data = log["data"]
+    if isinstance(raw_data, (bytes, bytearray)):
+        data_bytes = bytes(raw_data)
+    else:
+        data_bytes = Web3.to_bytes(hexstr=raw_data)
     isZeroToOne, amountIn, fee, amountOut, usdcDelta = w3_http.codec.decode(
         ["bool", "uint256", "uint256", "uint256", "int256"],
         data_bytes,
     )
 
     bn = log.get("blockNumber")
-    block_number = int(bn, 16) if isinstance(bn, str) else int(bn)
+    if bn is None:
+        block_number = 0
+    else:
+        block_number = int(bn, 16) if isinstance(bn, str) else int(bn)
+
+    addr = log["address"]
+    pool_addr = Web3.to_checksum_address(addr)
+
+    th = log.get("transactionHash")
+    tx_hex = Web3.to_hex(th) if th is not None else None
 
     return {
-        "pool": Web3.to_checksum_address(log["address"]),
+        "pool": pool_addr,
         "sender": sender,
         "isZeroToOne": bool(isZeroToOne),
         "amountIn": int(amountIn),
         "fee": int(fee),
         "amountOut": int(amountOut),
         "usdcDelta": int(usdcDelta),
-        "txHash": log.get("transactionHash"),
+        "txHash": tx_hex,
         "blockNumber": block_number,
     }
 
@@ -240,7 +275,6 @@ async def poll_escrow_once() -> None:
 
     snapshot = await asyncio.to_thread(_read)
 
-    global escrow_claimable
     prev_claimable = {k for k, v in escrow_claimable.items() if v.get("canClaimBuy")}
     async with escrow_poll_lock:
         escrow_claimable = snapshot
@@ -271,58 +305,101 @@ async def escrow_poller_loop() -> None:
         await asyncio.sleep(ESCROW_POLL_INTERVAL_S)
 
 
-async def evm_swap_listener_loop() -> None:
+def _log_sort_key(log: Any) -> tuple:
+    bn = log["blockNumber"]
+    bi = int(bn, 16) if isinstance(bn, str) else int(bn)
+    li = log.get("logIndex", 0)
+    li = int(li, 16) if isinstance(li, str) else int(li)
+    return (bi, li)
+
+
+def _get_logs_chunked(from_block: int, to_block: int) -> List[Any]:
+    """eth_getLogs in chunks (RPCs often cap block range)."""
+    out: List[Any] = []
+    fb = from_block
+    rng = max(1, MAX_GET_LOGS_BLOCK_RANGE)
+    while fb <= to_block:
+        tb = min(fb + rng - 1, to_block)
+        chunk = w3_http.eth.get_logs(
+            {
+                "fromBlock": fb,
+                "toBlock": tb,
+                "address": WATCH_POOL,
+                "topics": [SWAP_TOPIC0],
+            }
+        )
+        out.extend(chunk)
+        fb = tb + 1
+    return out
+
+
+def _sync_fetch_new_swaps(last_processed: Optional[int]) -> tuple[List[Dict[str, Any]], int]:
+    """
+    Returns decoded Swap events and the new high-water block number (inclusive).
+    If last_processed is None, scans from max(0, latest - SWAP_LOG_LOOKBACK_BLOCKS).
+    """
+    latest = int(w3_http.eth.block_number)
+    if last_processed is None:
+        from_block = max(0, latest - max(0, SWAP_LOG_LOOKBACK_BLOCKS))
+    else:
+        from_block = last_processed + 1
+    to_block = latest
+    if from_block > to_block:
+        return [], last_processed if last_processed is not None else latest
+
+    raw_logs = _get_logs_chunked(from_block, to_block)
+    raw_logs = sorted(raw_logs, key=_log_sort_key)
+    events: List[Dict[str, Any]] = []
+    for raw in raw_logs:
+        try:
+            events.append(decode_swap_log(dict(raw)))
+        except Exception:
+            print("[evm_swap_poll] decode_swap_log failed", flush=True)
+            traceback.print_exc()
+    return events, to_block
+
+
+async def evm_swap_poll_loop() -> None:
+    global last_swap_block_processed
     while True:
         try:
-            print("[evm_swap_listener] connecting...", flush=True)
-            async with websockets.connect(ALCHEMY_WSS_URL, ping_interval=20, ping_timeout=20) as ws:
-                params = {"address": WATCH_POOL, "topics": [SWAP_TOPIC0]}
-                req = {"jsonrpc": "2.0", "id": 1, "method": "eth_subscribe", "params": ["logs", params]}
-
-                await ws.send(json.dumps(req))
-                resp_raw = await ws.recv()
-                resp = json.loads(resp_raw)
-                if "error" in resp:
-                    raise RuntimeError(resp["error"])
-
-                print(f"[evm_swap_listener] subscribed pool={WATCH_POOL}", flush=True)
-
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                    except Exception:
-                        continue
-
-                    if msg.get("method") != "eth_subscription":
-                        continue
-
-                    payload = msg.get("params", {}).get("result")
-                    if not payload:
-                        continue
-
-                    try:
-                        ev = decode_swap_log(payload)
-                    except Exception:
-                        await debug_emit("decode_swap_failed", {"trace": traceback.format_exc()})
-                        continue
-
-                    async with state_lock:
-                        EVENTS.append(ev)
-                        if len(EVENTS) > MAX_EVENTS_STORED:
-                            del EVENTS[: len(EVENTS) - MAX_EVENTS_STORED]
-
-                    await broadcast({"type": "swap", "data": ev})
-
+            events, new_high = await asyncio.to_thread(_sync_fetch_new_swaps, last_swap_block_processed)
+            if last_swap_block_processed is None:
+                print(
+                    f"[evm_swap_poll] initialized through block {new_high} "
+                    f"(lookback_blocks={SWAP_LOG_LOOKBACK_BLOCKS})",
+                    flush=True,
+                )
+            elif events:
+                print(
+                    f"[evm_swap_poll] +{len(events)} swap(s) blocks "
+                    f"{last_swap_block_processed + 1}-{new_high}",
+                    flush=True,
+                )
+            async with state_lock:
+                last_swap_block_processed = new_high
+                for ev in events:
+                    EVENTS.append(ev)
+                    if len(EVENTS) > MAX_EVENTS_STORED:
+                        del EVENTS[: len(EVENTS) - MAX_EVENTS_STORED]
+            for ev in events:
+                await broadcast({"type": "swap", "data": ev})
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            print(f"[evm_swap_listener] error: {e} — reconnecting...", flush=True)
-            await asyncio.sleep(2.0)
+            print(f"[evm_swap_poll] error: {e} — retrying...", flush=True)
+            traceback.print_exc()
+            await debug_emit("swap_poll_crash", {"trace": traceback.format_exc()})
+        await asyncio.sleep(SWAP_POLL_INTERVAL_S)
 
 
 async def heartbeat_loop() -> None:
     while True:
-        print(f"[heartbeat] clients={len(CLIENTS)} events={len(EVENTS)} escrow_trades={len(escrow_claimable)}", flush=True)
+        print(
+            f"[heartbeat] clients={len(CLIENTS)} events={len(EVENTS)} "
+            f"last_swap_block={last_swap_block_processed} escrow_trades={len(escrow_claimable)}",
+            flush=True,
+        )
         await asyncio.sleep(10)
 
 
@@ -331,17 +408,17 @@ async def heartbeat_loop() -> None:
 # -----------------------------
 from contextlib import asynccontextmanager
 
-listener_task: Optional[asyncio.Task] = None
+swap_poll_task: Optional[asyncio.Task] = None
 heartbeat_task: Optional[asyncio.Task] = None
 escrow_task: Optional[asyncio.Task] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global listener_task, heartbeat_task, escrow_task
+    global swap_poll_task, heartbeat_task, escrow_task
     print("[lifespan] startup", flush=True)
 
-    listener_task = asyncio.create_task(evm_swap_listener_loop(), name="evm_swap_listener")
+    swap_poll_task = asyncio.create_task(evm_swap_poll_loop(), name="evm_swap_poll")
     heartbeat_task = asyncio.create_task(heartbeat_loop(), name="heartbeat")
 
     escrow_task = asyncio.create_task(escrow_poller_loop(), name="escrow_poller")
@@ -350,7 +427,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
-        for t in (listener_task, heartbeat_task, escrow_task):
+        for t in (swap_poll_task, heartbeat_task, escrow_task):
             if t:
                 t.cancel()
                 try:
@@ -361,7 +438,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="DeltaFlow — swap listener + CoreWriter escrow status",
+    title="DeltaFlow — swap log polling + CoreWriter escrow status",
     version="3.0.0",
     lifespan=lifespan,
 )
@@ -378,6 +455,8 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> Dict[str, Any]:
     default_core_vault = await get_default_core_vault()
+    async with state_lock:
+        swap_head = last_swap_block_processed
     return {
         "ok": True,
         "watchPool": WATCH_POOL,
@@ -387,6 +466,9 @@ async def health() -> Dict[str, Any]:
         "hedgeEscrow": HEDGE_ESCROW_ADDRESS,
         "purrTokenIndex": PURR_TOKEN_INDEX,
         "escrowPollIntervalS": ESCROW_POLL_INTERVAL_S,
+        "swapPollIntervalS": SWAP_POLL_INTERVAL_S,
+        "swapLogLookbackBlocks": SWAP_LOG_LOOKBACK_BLOCKS,
+        "lastSwapBlockProcessed": swap_head,
     }
 
 

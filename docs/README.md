@@ -23,6 +23,7 @@ flowchart TB
 | Deploy **USDC/PURR** vs **USDC/WETH** | [Pairs and deployment scripts](deployment/pairs-and-scripts.md) |
 | **Spot indices, token ids, `10000+spotIndex`** | [Testnet asset IDs](deployment/testnet-asset-ids.md) |
 | Run the stack locally | [Quick start](getting-started/quick-start.md) |
+| **Deploy → backend + frontend → trades → fund a test portfolio** | [Full stack runbook](getting-started/full-stack-runbook.md) |
 | System overview | [Architecture](architecture/overview.md) |
 | On-chain components | [Protocol contracts](protocol/contracts.md) |
 | Backend & API | [Backend API](operations/backend-api.md) |

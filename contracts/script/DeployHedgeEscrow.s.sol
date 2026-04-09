@@ -9,7 +9,8 @@ import {HedgeEscrow} from "../src/HedgeEscrow.sol";
 
 /// @title DeployHedgeEscrow
 /// @notice Standalone HedgeEscrow deploy (e.g. replacement / custom pair). **`DeployAll` already deploys HedgeEscrow per stack.**
-/// @dev Spot limit order asset = 10000 + spotIndex (NOT perp universe id). Set USDC, PURR from env. Run on HyperEVM RPC where precompiles resolve.
+/// @dev Uses `PrecompileLib` (HyperEVM registry + token info). Run `forge script` with
+/// `--fork-url https://rpc.hyperliquid-testnet.xyz/evm` and a valid `--fork-block-number` so simulation succeeds.
 contract DeployHedgeEscrow is Script {
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");

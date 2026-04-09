@@ -1,5 +1,7 @@
 # Quick start
 
+For an **end-to-end** guide (deploy, start servers, swaps, ~$50 test portfolio, second pool notes), use **[Full stack runbook](full-stack-runbook.md)**.
+
 Prerequisites: **Foundry**, **Node.js ≥ 18**, **Python ≥ 3.10**.
 
 **Target chain:** Hyperliquid **testnet** HyperEVM (**998**). Use [`deploy/testnet.env.example`](../../deploy/testnet.env.example) as the forge env template and [Testnet asset IDs](../deployment/testnet-asset-ids.md) for indices.
@@ -11,13 +13,14 @@ flowchart TD
   B --> D[Copy SOVEREIGN_VAULT / WATCH_POOL to backend]
 ```
 
-## 1. Clone and backend env
+## 1. Clone and env files
 
 ```bash
 git clone <your-repo-url> && cd DeltaFlow
 cp backend/.env.example backend/.env
-# Fill in: ALCHEMY_WSS_URL, EVM_RPC_HTTP_URL, SOVEREIGN_VAULT, WATCH_POOL,
-# USDC_ADDRESS, PURR_ADDRESS, HEDGE_ESCROW, PURR_TOKEN_INDEX (or run sync after deploy)
+cp frontend/.env.example frontend/.env.local
+# After deploy + sync: backend/.env and frontend/.env.local get contract addresses automatically.
+# You must still set NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID in frontend/.env.local.
 ```
 
 ## 2. Build contracts
@@ -30,11 +33,16 @@ forge build --force
 
 Copy [`deploy/testnet.env.example`](../../deploy/testnet.env.example) to the repo root as **`.env`** (or export vars). Fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex`](../../contracts/script/ReadSpotIndex.s.sol)), and optional DeltaFlow / V3 fee knobs. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (DeltaFlow composite fee module + surplus + risk engine).
 
-**USDC / PURR (full AMM stack):**
+**USDC / PURR (full AMM stack):** Prefer **`./scripts/deploy_all_testnet.sh`** — it passes **`--fork-url`** and **`--fork-block-number`** so Forge simulates against HyperEVM ( **`PrecompileLib`** / HedgeEscrow need HL precompiles; plain `--rpc-url` only reverts on `0x…080C`).
+
+Manual:
 
 ```bash
+RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployAll.s.sol:DeployAll \
-  --rpc-url https://rpc.hyperliquid-testnet.xyz/evm \
+  --rpc-url "$RPC" \
+  --fork-url "$RPC" \
+  --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 ```
 
@@ -42,21 +50,25 @@ Set env vars as required by `DeployAll` (`PRIVATE_KEY`, `USDC`, `PURR`, `POOL_MA
 
 See [Current implementation — per-swap hedge & queue](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue) and [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).
 
-After **`--broadcast`**, run **`./scripts/deploy_all_testnet.sh`** (deploy + sync) or **`python3 scripts/sync_env_from_broadcast.py`** to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from `broadcast/DeployAll.s.sol/998/run-latest.json` (set **`RPC_URL`** so `cast` can fill **`PURR_TOKEN_INDEX`** when HedgeEscrow is deployed).
+After **`--broadcast`**, run **`python3 scripts/sync_env_from_broadcast.py`** ( **`deploy_all_testnet.sh`** does this at the end) to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from `broadcast/DeployAll.s.sol/998/run-latest.json` (set **`RPC_URL`** so `cast` can fill **`PURR_TOKEN_INDEX`** when needed).
 
-**HedgeEscrow only:**
+**HedgeEscrow only:** use the same **`--fork-url`** / **`--fork-block-number`** pattern as `DeployAll`.
 
 ```bash
+RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployHedgeEscrow.s.sol:DeployHedgeEscrow \
-  --rpc-url https://rpc.hyperliquid-testnet.xyz/evm \
+  --rpc-url "$RPC" --fork-url "$RPC" \
+  --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 ```
 
 **USDC / WETH** (standalone stack):
 
 ```bash
+RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployUsdcWeth.s.sol:DeployUsdcWeth \
-  --rpc-url https://rpc.hyperliquid-testnet.xyz/evm \
+  --rpc-url "$RPC" --fork-url "$RPC" \
+  --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 ```
 
@@ -74,10 +86,11 @@ python server.py
 
 ```bash
 cd frontend
-cp .env.example .env.local   # NEXT_PUBLIC_* contract addresses + WalletConnect project ID
 pnpm install
 pnpm dev
 ```
+
+Ensure **`frontend/.env.local`** exists (from **`frontend/.env.example`**) with **`NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`** and, for the Hedge tab, **`NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000`**. Contract addresses are merged by **`sync_env_from_broadcast.py`** after deploy.
 
 ## Optional: Python deploy helper
 

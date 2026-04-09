@@ -319,6 +319,10 @@ abstract contract AmmDeployBase is Script {
             }
         }
 
+        // HedgeEscrow wiring uses HyperEVM precompiles (registry + token info). `forge script` without
+        // `--fork-url` simulates on a plain anvil that lacks those precompiles and reverts on 0x…080C.
+        // Always deploy with `--fork-url https://rpc.hyperliquid-testnet.xyz/evm` (and a recent
+        // `--fork-block-number` if the RPC rejects the default), see `scripts/deploy_all_testnet.sh`.
         uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);
         uint64 spotIdx = PrecompileLib.getSpotIndex(p.purr);
         uint32 spotAsset = uint32(uint256(10000) + uint256(spotIdx));

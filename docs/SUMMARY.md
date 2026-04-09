@@ -4,6 +4,7 @@
 
 * [Welcome](README.md)
 * [Quick start](getting-started/quick-start.md)
+* [Full stack runbook — deploy, servers, trades, ~$50 test portfolio](getting-started/full-stack-runbook.md)
 
 ## Architecture
 

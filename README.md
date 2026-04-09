@@ -83,6 +83,10 @@ pnpm dev
 
 **Indices and asset ids** (`10000 + spotIndex`, token indices, perp vs spot): [`docs/deployment/testnet-asset-ids.md`](./docs/deployment/testnet-asset-ids.md). For **`DeployAll`** with an external vault, set **`PERP_INDEX_PURR`** (or WETH) to the real **perp** index for the base asset; see [`deploy/testnet.env.example`](./deploy/testnet.env.example) and [`docs/deployment/pairs-and-scripts.md`](./docs/deployment/pairs-and-scripts.md).
 
+## End-to-end runbook
+
+Step-by-step: **deploy → start backend + frontend → trade → ~$50 test portfolio (USDC/PURR + notes for USDC/WETH)** — see **[`docs/getting-started/full-stack-runbook.md`](./docs/getting-started/full-stack-runbook.md)**.
+
 ## Deployment
 
 **Recommended (one step — deploy + write `frontend/.env.local` and `backend/.env`):**
@@ -92,16 +96,21 @@ forge clean && forge build
 ./scripts/deploy_all_testnet.sh
 ```
 
-This runs `forge script ... DeployAll ... --broadcast` then **`python3 scripts/sync_env_from_broadcast.py`**, which reads `broadcast/DeployAll.s.sol/998/run-latest.json` and merges contract addresses into those env files (existing keys like `ALCHEMY_WSS_URL` / `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` are preserved).
+This runs `forge script ... DeployAll ... --broadcast` then **`python3 scripts/sync_env_from_broadcast.py`**, which reads `broadcast/DeployAll.s.sol/998/run-latest.json` and merges contract addresses into those env files (existing keys like `SWAP_POLL_INTERVAL_S` / `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` are preserved).
 
 Manual equivalent:
 
 ```shell
+RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployAll.s.sol:DeployAll \
-  --rpc-url https://rpc.hyperliquid-testnet.xyz/evm \
+  --rpc-url "$RPC" \
+  --fork-url "$RPC" \
+  --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
-RPC_URL=https://rpc.hyperliquid-testnet.xyz/evm python3 scripts/sync_env_from_broadcast.py
+RPC_URL="$RPC" python3 scripts/sync_env_from_broadcast.py
 ```
+
+`DeployAll` uses `PrecompileLib` for HedgeEscrow; **fork** the HyperEVM RPC for simulation or the script reverts on precompiles. Prefer **`./scripts/deploy_all_testnet.sh`**, which sets `--fork-url` and `--fork-block-number` automatically.
 
 See [`scripts/sync_env_from_broadcast.py`](./scripts/sync_env_from_broadcast.py) for flags (`--dry-run`, custom paths).
 
@@ -110,7 +119,7 @@ Optional: `./check_deploy.sh` with **`POOL`**, **`VAULT`**, **`ALM`**, **`SWAP_F
 ## Backend Server
 
 ```shell
-$ pip install dotenv asyncio fastapi web3 websockets
+$ pip install python-dotenv fastapi uvicorn web3
 $ python backend/server.py
 ```
 
