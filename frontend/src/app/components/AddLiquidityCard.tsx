@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   useAccount,
@@ -8,11 +9,10 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { parseUnits, formatUnits } from "viem";
-import { Plus, Loader2, ChevronDown } from "lucide-react";
-import { TOKENS, ERC20_ABI } from "@/contracts";
+import { Plus, Loader2, ChevronDown, ArrowRight } from "lucide-react";
+import { ADDRESSES, TOKENS, ERC20_ABI } from "@/contracts";
 
-// Vault address (recipient)
-const VAULT_ADDRESS = "0x715EB367788e71C4c6aee4E8994aD407807fec27" as const;
+const VAULT_ADDRESS = ADDRESSES.VAULT;
 
 // ═══════════════════════════════════════════════════════════════
 // Token Input Component
@@ -217,11 +217,34 @@ export default function AddLiquidityCard() {
   }, [isConnected, amount0, amount1, isLoading]);
 
   return (
-    <div className="w-full">
+    <div className="w-full space-y-4">
+      <Link
+        href="/lp"
+        className="flex items-center justify-between gap-3 p-4 rounded-2xl bg-[var(--accent-muted)] border border-[var(--border)] text-sm text-[var(--foreground)] hover:border-[var(--accent)] transition group"
+      >
+        <span>
+          <strong className="text-[var(--accent)]">Mint DFLP</strong> — use the
+          LP dashboard for <code>depositLP</code>, share %, and fee surplus
+          view.
+        </span>
+        <ArrowRight
+          size={18}
+          className="shrink-0 text-[var(--accent)] group-hover:translate-x-0.5 transition"
+        />
+      </Link>
+
       <div className="bg-[var(--card)] rounded-3xl border border-[var(--border)] p-4 shadow-lg glow-green">
         <h2 className="text-lg font-semibold text-[var(--foreground)] mb-1">
-          Deposit to Vault
+          Quick transfer to vault
         </h2>
+        <p className="text-xs text-[var(--text-muted)] mb-3">
+          Plain ERC-20 transfers increase vault balance but do{" "}
+          <strong>not</strong> mint LP shares. Prefer{" "}
+          <Link href="/lp" className="text-[var(--accent)] underline">
+            /lp
+          </Link>
+          .
+        </p>
 
         {/* Token 0 */}
         <TokenInput

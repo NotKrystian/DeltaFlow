@@ -100,3 +100,50 @@ button:focus-visible {
 .font-manrope {
   font-family: var(--font-manrope);
 }
+
+/* Documentation pages */
+.docs-prose h2 {
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--foreground);
+  margin-top: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+.docs-prose h2:first-child {
+  margin-top: 0;
+}
+.docs-prose p {
+  color: var(--text-secondary);
+}
+.docs-prose ul,
+.docs-prose ol {
+  margin: 0.5rem 0 0 1.25rem;
+  color: var(--text-secondary);
+}
+.docs-prose li {
+  margin: 0.35rem 0;
+}
+.docs-prose code {
+  font-size: 0.875em;
+  padding: 0.1em 0.35em;
+  border-radius: 0.35rem;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  color: var(--accent);
+}
+.docs-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.docs-prose a:hover {
+  color: var(--accent-hover);
+}
+.docs-prose .callout {
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  padding: 1rem 1.25rem;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}

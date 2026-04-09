@@ -14,7 +14,7 @@ sequenceDiagram
   Fee-->>Pool: fee bips
   Pool->>ALM: getQuote (spot)
   ALM-->>Pool: amountOut
-  Pool->>Vault: processSwapHedge (before tokenOut); may escrow
+  Pool->>Vault: processSwapHedge before tokenOut (may escrow)
   Pool->>Vault: sendTokensToRecipient if poolShouldSendTokenOut
 ```
 

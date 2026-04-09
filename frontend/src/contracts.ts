@@ -998,6 +998,90 @@ export const SOVEREIGN_VAULT_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    name: "purr",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    name: "getReserves",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "reserveUsdc", type: "uint256" },
+      { name: "reservePurr", type: "uint256" },
+    ],
+  },
+  {
+    name: "depositLP",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "usdcAmount", type: "uint256" },
+      { name: "purrAmount", type: "uint256" },
+      { name: "minShares", type: "uint256" },
+    ],
+    outputs: [{ name: "shares", type: "uint256" }],
+  },
+  {
+    name: "withdrawLP",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "shares", type: "uint256" },
+      { name: "minUsdc", type: "uint256" },
+      { name: "minPurr", type: "uint256" },
+    ],
+    outputs: [
+      { name: "usdcOut", type: "uint256" },
+      { name: "purrOut", type: "uint256" },
+    ],
+  },
+  {
+    name: "hedgePerpAssetIndex",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    name: "useMarkBasedMinHedgeSz",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "minPerpHedgeSz",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint64" }],
+  },
+  {
+    name: "pendingHedgeBuySz",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "pendingHedgeSellSz",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "hedgeSzThreshold",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 
   // Write Functions
   {
@@ -1547,6 +1631,17 @@ export const HEDGE_ESCROW_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ type: "uint256" }],
+  },
+] as const;
+
+/// @notice DeltaFlow fee surplus buffer (USDC accounting from swap fees)
+export const FEE_SURPLUS_ABI = [
+  {
+    name: "surplusUsdc",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
 

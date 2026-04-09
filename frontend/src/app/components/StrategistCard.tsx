@@ -268,11 +268,8 @@ function safeFormatUnits(value: bigint | undefined, decimals: number): string {
 export default function StrategistCard() {
   const { address: userAddress, isConnected } = useAccount();
 
-  // Defaults (your vault)
   const [poolAddress, setPoolAddress] = useState<string>(ADDRESSES.POOL);
-  const [vaultAddress, setVaultAddress] = useState<string>(
-    "0x715EB367788e71C4c6aee4E8994aD407807fec27",
-  );
+  const [vaultAddress, setVaultAddress] = useState<string>(ADDRESSES.VAULT);
   const [almAddress, setAlmAddress] = useState<string>(ADDRESSES.ALM);
 
   // Deposit state (EVM transfer to vault)
@@ -493,6 +490,43 @@ export default function StrategistCard() {
     functionName: "authorizedPools",
     args: [poolAddress as `0x${string}`],
     query: { enabled: isVaultDeployed && isPoolDeployed },
+  });
+
+  const { data: hedgePerpIx, refetch: refetchHedgePerp } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "hedgePerpAssetIndex",
+    query: { enabled: isVaultDeployed },
+  });
+  const { data: useMarkMinHedge, refetch: refetchUseMark } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "useMarkBasedMinHedgeSz",
+    query: { enabled: isVaultDeployed },
+  });
+  const { data: minPerpFloor, refetch: refetchMinFloor } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "minPerpHedgeSz",
+    query: { enabled: isVaultDeployed },
+  });
+  const { data: pendingBuySz, refetch: refetchPendBuy } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "pendingHedgeBuySz",
+    query: { enabled: isVaultDeployed },
+  });
+  const { data: pendingSellSz, refetch: refetchPendSell } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "pendingHedgeSellSz",
+    query: { enabled: isVaultDeployed },
+  });
+  const { data: hedgeThresh, refetch: refetchHedgeTh } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "hedgeSzThreshold",
+    query: { enabled: isVaultDeployed },
   });
 
   // Actual ERC20 balances at vault address (EVM)
@@ -724,6 +758,13 @@ export default function StrategistCard() {
     refetchVaultCorePurr();
     refetchVaultCoreHype();
 
+    refetchHedgePerp();
+    refetchUseMark();
+    refetchMinFloor();
+    refetchPendBuy();
+    refetchPendSell();
+    refetchHedgeTh();
+
     // ALM
     refetchSpot();
     refetchAlmPool();
@@ -782,10 +823,18 @@ export default function StrategistCard() {
     <div className="w-full">
       <div className="bg-[var(--card)] rounded-3xl border border-[var(--border)] p-4 sm:p-6 shadow-lg glow-green">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+          <div>
+            <h2 className="text-lg font-semibold text-[var(--foreground)]">
+              Vault & pool ops
+            </h2>
+            <p className="text-xs text-[var(--text-muted)] mt-1">
+              Env addresses from <code className="text-[var(--text-secondary)]">NEXT_PUBLIC_*</code>; override below if needed.
+            </p>
+          </div>
           <button
             onClick={refreshAll}
-            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--input-bg)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--foreground)] hover:border-[var(--border-hover)] transition"
+            className="flex items-center gap-2 px-3 py-2 rounded-xl bg-[var(--input-bg)] border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--foreground)] hover:border-[var(--border-hover)] transition self-start"
           >
             <RefreshCw size={16} />
             <span className="text-sm">Refresh</span>
@@ -1320,6 +1369,54 @@ export default function StrategistCard() {
                 isError={errorUsdcBal}
                 suffix="USDC"
               />
+            </>
+          )}
+        </Section>
+
+        <div className="h-4" />
+
+        <Section title="Perp hedge queue (swap IOC batching)" defaultOpen={true}>
+          {!isVaultDeployed ? (
+            <p className="text-sm text-[var(--text-muted)]">Set vault address.</p>
+          ) : (
+            <>
+              <DataRow
+                label="hedgePerpAssetIndex"
+                value={hedgePerpIx !== undefined ? String(hedgePerpIx) : undefined}
+              />
+              <DataRow
+                label="useMarkBasedMinHedgeSz"
+                value={
+                  useMarkMinHedge === undefined
+                    ? undefined
+                    : useMarkMinHedge
+                      ? "yes"
+                      : "no"
+                }
+              />
+              <DataRow
+                label="minPerpHedgeSz (floor / fixed)"
+                value={minPerpFloor !== undefined ? String(minPerpFloor) : undefined}
+              />
+              <DataRow
+                label="hedgeSzThreshold (current)"
+                value={hedgeThresh !== undefined ? String(hedgeThresh) : undefined}
+              />
+              <DataRow
+                label="pendingHedgeBuySz"
+                value={pendingBuySz !== undefined ? String(pendingBuySz) : undefined}
+              />
+              <DataRow
+                label="pendingHedgeSellSz"
+                value={
+                  pendingSellSz !== undefined ? String(pendingSellSz) : undefined
+                }
+              />
+              <p className="text-xs text-[var(--text-muted)] mt-3">
+                Mark mode uses ~$10 HL min notional via{" "}
+                <code>normalizedMarkPx</code>. Opposite swap flow nets queued{" "}
+                <code>sz</code> before the next IOC.
+              </p>
             </>
           )}
         </Section>

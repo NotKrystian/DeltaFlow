@@ -1,20 +1,55 @@
 "use client";
 
+import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { Wallet } from "lucide-react";
 
+const nav = [
+  { href: "/", label: "Trade" },
+  { href: "/lp", label: "LP" },
+  { href: "/strategist", label: "Strategist" },
+  { href: "/docs", label: "Docs" },
+] as const;
+
 export default function Header() {
+  const pathname = usePathname();
+
   return (
     <header className="sticky top-0 z-50 bg-[var(--background)]/80 backdrop-blur-sm border-b border-[var(--border)]">
       <div className="max-w-7xl mx-auto px-6 sm:px-10">
-        <div className="flex items-center justify-between h-16">
-          {/* Logo */}
-          <div className="flex items-center gap-2">
-            <img
-              src="/deltaFlow.png"
-              alt="Delta Flow"
-              className="h-7 sm:h-8 w-auto object-contain"
-            />
+        <div className="flex items-center justify-between h-16 gap-4">
+          <div className="flex items-center gap-6 min-w-0">
+            <Link href="/" className="flex items-center gap-2 shrink-0">
+              <img
+                src="/deltaFlow.png"
+                alt="Delta Flow"
+                className="h-7 sm:h-8 w-auto object-contain"
+              />
+            </Link>
+            <nav className="hidden sm:flex items-center gap-1">
+              {nav.map(({ href, label }) => {
+                const active =
+                  href === "/"
+                    ? pathname === "/"
+                    : href === "/docs"
+                      ? pathname === "/docs" || pathname.startsWith("/docs/")
+                      : pathname.startsWith(href);
+                return (
+                  <Link
+                    key={href}
+                    href={href}
+                    className={`px-3 py-1.5 rounded-xl text-sm font-medium transition ${
+                      active
+                        ? "bg-[var(--accent-muted)] text-[var(--accent)] border border-[var(--border)]"
+                        : "text-[var(--text-muted)] hover:text-[var(--foreground)]"
+                    }`}
+                  >
+                    {label}
+                  </Link>
+                );
+              })}
+            </nav>
           </div>
 
           {/* Connect button (custom styled) */}
