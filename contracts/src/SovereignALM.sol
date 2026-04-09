@@ -9,12 +9,12 @@ import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IER
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 
-/// @title SovereignALM - Hyperliquid Spot Price ALM (USDC/PURR)
+/// @title SovereignALM - Hyperliquid Spot Price ALM (USDC/base)
 /// @notice Returns spot quotes using HL price and REVERTS if vault cannot pay amountOut.
 /// @dev Canonical internal price is always:
-///      pxUSDCperPURR = (USDC raw units per 1 PURR), scaled to USDC decimals.
-///      Example: if USDC decimals=6 and 1 PURR = 4.69 USDC,
-///      pxUSDCperPURR ≈ 4_690_000.
+///      pxUsdcPerBase = (USDC raw units per 1 base token), scaled to USDC decimals.
+///      Example: if USDC decimals=6 and 1 base = 4.69 USDC,
+///      pxUsdcPerBase ≈ 4_690_000.
 contract SovereignALM is ISovereignALM {
     uint256 private constant BIPS = 10_000;
 
@@ -83,28 +83,26 @@ contract SovereignALM is ISovereignALM {
         _;
     }
 
-    /// @notice Returns canonical USDC-per-PURR price scaled to USDC decimals.
-    function getSpotPriceUSDCperPURR() public view returns (uint256 pxUSDCperPURR) {
+    /// @notice Returns canonical USDC-per-base price scaled to USDC decimals.
+    function getSpotPriceUsdcPerBase() public view returns (uint256 pxUsdcPerBase) {
         uint256 raw = PrecompileLib.normalizedSpotPx(spotIndexPURR);
         if (raw == 0) revert SovereignALM__ZeroPrice();
 
         uint256 USDC_SCALE = 10 ** uint256(usdcDec);
 
         if (!rawIsPurrPerUsdc) {
-            // raw = (USDC per PURR) scaled by rawPxScale
-            // want pxUSDCperPURR scaled by USDC decimals:
+            // raw = (USDC per base) scaled by rawPxScale
+            // want pxUsdcPerBase scaled by USDC decimals:
             // px = raw * USDC_SCALE / rawPxScale
-            pxUSDCperPURR = Math.mulDiv(raw, USDC_SCALE, rawPxScale);
+            pxUsdcPerBase = Math.mulDiv(raw, USDC_SCALE, rawPxScale);
         } else {
-            // raw = (PURR per USDC) scaled by rawPxScale
-            // invert to get (USDC per PURR):
-            // (USDC/PURR) = 1 / (PURR/USDC)
-            // scaled to USDC decimals:
+            // raw = (base per USDC) scaled by rawPxScale
+            // invert to get (USDC per base):
             // px = USDC_SCALE * rawPxScale / raw
-            pxUSDCperPURR = Math.mulDiv(USDC_SCALE, rawPxScale, raw);
+            pxUsdcPerBase = Math.mulDiv(USDC_SCALE, rawPxScale, raw);
         }
 
-        if (pxUSDCperPURR == 0) revert SovereignALM__ZeroPrice();
+        if (pxUsdcPerBase == 0) revert SovereignALM__ZeroPrice();
     }
 
     /// @notice Quote function used by the pool during swaps
@@ -125,13 +123,13 @@ contract SovereignALM is ISovereignALM {
 
         if (!ok) revert SovereignALM__UnsupportedPair(tokenIn, tokenOut);
 
-        uint256 pxUSDCperPURR = getSpotPriceUSDCperPURR();
+        uint256 pxUsdcPerBase = getSpotPriceUsdcPerBase();
 
         uint256 amountOut = _quoteOutAtSpot(
             tokenIn,
             tokenOut,
             input.amountInMinusFee,
-            pxUSDCperPURR
+            pxUsdcPerBase
         );
 
         // HARD liquidity check against vault live balance
@@ -152,26 +150,23 @@ contract SovereignALM is ISovereignALM {
     function onDepositLiquidityCallback(uint256, uint256, bytes memory) external override onlyPool {}
     function onSwapCallback(bool, uint256, uint256) external override onlyPool {}
 
-    /// @dev Spot quoting assuming pxUSDCperPURR is:
-    ///      (USDC raw units per 1 PURR), scaled to USDC decimals.
+    /// @dev Spot quoting assuming `pxUsdcPerBase` is (USDC raw units per 1 base), scaled to USDC decimals.
     function _quoteOutAtSpot(
         address tokenIn,
         address tokenOut,
         uint256 amountInRaw,
-        uint256 pxUSDCperPURR
+        uint256 pxUsdcPerBase
     ) internal view returns (uint256 amountOutRaw) {
         uint256 PURR_SCALE = 10 ** uint256(purrDec);
 
         if (tokenIn == purr && tokenOut == usdc) {
-            // PURR -> USDC
-            // amountOutUSDC_raw = amountInPURR_raw * (USDC_raw per 1 PURR) / 10^purrDec
-            return Math.mulDiv(amountInRaw, pxUSDCperPURR, PURR_SCALE);
+            // base -> USDC
+            return Math.mulDiv(amountInRaw, pxUsdcPerBase, PURR_SCALE);
         }
 
         if (tokenIn == usdc && tokenOut == purr) {
-            // USDC -> PURR
-            // amountOutPURR_raw = amountInUSDC_raw * 10^purrDec / (USDC_raw per 1 PURR)
-            return Math.mulDiv(amountInRaw, PURR_SCALE, pxUSDCperPURR);
+            // USDC -> base
+            return Math.mulDiv(amountInRaw, PURR_SCALE, pxUsdcPerBase);
         }
 
         revert SovereignALM__UnsupportedPair(tokenIn, tokenOut);

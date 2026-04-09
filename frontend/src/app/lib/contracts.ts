@@ -18,7 +18,7 @@ export const TOKENS = {
     address: CONTRACTS.PURR,
     symbol: "PURR",
     name: "PURR",
-    decimals: 5,
+    decimals: 18,
     logo: "/purr.png",
   },
   USDC: {

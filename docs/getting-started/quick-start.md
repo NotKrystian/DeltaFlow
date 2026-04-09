@@ -9,8 +9,9 @@ Prerequisites: **Foundry**, **Node.js ≥ 18**, **Python ≥ 3.10**.
 ```mermaid
 flowchart TD
   A[forge script DeployAll] --> B[Broadcast contracts]
-  B --> C[Copy NEXT_PUBLIC_* to frontend]
-  B --> D[Copy SOVEREIGN_VAULT / WATCH_POOL to backend]
+  B --> C[sync_env_from_broadcast.py]
+  C --> F[frontend .env.local NEXT_PUBLIC_*]
+  C --> D[backend .env WATCH_POOL / escrow]
 ```
 
 ## 1. Clone and env files
@@ -33,7 +34,7 @@ forge build --force
 
 Copy [`deploy/testnet.env.example`](../../deploy/testnet.env.example) to the repo root as **`.env`** (or export vars). Fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex`](../../contracts/script/ReadSpotIndex.s.sol)), and optional DeltaFlow / V3 fee knobs. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (DeltaFlow composite fee module + surplus + risk engine).
 
-**USDC / PURR (full AMM stack):** Prefer **`./scripts/deploy_all_testnet.sh`** — it passes **`--fork-url`** and **`--fork-block-number`** so Forge simulates against HyperEVM ( **`PrecompileLib`** / HedgeEscrow need HL precompiles; plain `--rpc-url` only reverts on `0x…080C`).
+**USDC / PURR (full AMM stack):** Prefer **`./scripts/deploy_all_testnet.sh`** — it passes **`--rpc-url`**, **`--fork-block-number`**, and **`--broadcast`**. HedgeEscrow wiring uses the token **registry** (`getTokenIndex`) plus **`SPOT_INDEX_PURR`** from env for the spot universe index (on-chain `getSpotIndex` uses precompile **`0x080C`**, which Forge simulation does not run).
 
 Manual:
 
@@ -41,7 +42,6 @@ Manual:
 RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployAll.s.sol:DeployAll \
   --rpc-url "$RPC" \
-  --fork-url "$RPC" \
   --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 ```
@@ -52,12 +52,12 @@ See [Current implementation — per-swap hedge & queue](../architecture/current-
 
 After **`--broadcast`**, run **`python3 scripts/sync_env_from_broadcast.py`** ( **`deploy_all_testnet.sh`** does this at the end) to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from `broadcast/DeployAll.s.sol/998/run-latest.json` (set **`RPC_URL`** so `cast` can fill **`PURR_TOKEN_INDEX`** when needed).
 
-**HedgeEscrow only:** use the same **`--fork-url`** / **`--fork-block-number`** pattern as `DeployAll`.
+**HedgeEscrow only:** same **`--rpc-url`** + **`--fork-block-number`** pattern as `DeployAll`.
 
 ```bash
 RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployHedgeEscrow.s.sol:DeployHedgeEscrow \
-  --rpc-url "$RPC" --fork-url "$RPC" \
+  --rpc-url "$RPC" \
   --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 ```
@@ -67,7 +67,7 @@ forge script contracts/script/DeployHedgeEscrow.s.sol:DeployHedgeEscrow \
 ```bash
 RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployUsdcWeth.s.sol:DeployUsdcWeth \
-  --rpc-url "$RPC" --fork-url "$RPC" \
+  --rpc-url "$RPC" \
   --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 ```
@@ -90,7 +90,7 @@ pnpm install
 pnpm dev
 ```
 
-Ensure **`frontend/.env.local`** exists (from **`frontend/.env.example`**) with **`NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`** and, for the Hedge tab, **`NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000`**. Contract addresses are merged by **`sync_env_from_broadcast.py`** after deploy.
+Ensure **`frontend/.env.local`** exists (from **`frontend/.env.example`**) with **`NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID`** and, for the Hedge tab, **`NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3000`** (or run Next on another port and set **`CORS_ORIGINS`** in **`backend/.env`**). Contract addresses are merged by **`sync_env_from_broadcast.py`** after deploy.
 
 ## Optional: Python deploy helper
 

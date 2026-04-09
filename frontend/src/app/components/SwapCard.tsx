@@ -8,34 +8,17 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { formatUnits, parseUnits, maxUint256 } from "viem";
-import { ArrowDown, ChevronDown, Loader2, Settings } from "lucide-react";
+import { ArrowDown, ChevronDown, Loader2 } from "lucide-react";
 import {
-  TOKENS,
   ERC20_ABI,
   SOVEREIGN_POOL_ABI,
   FEE_MODULE_ABI,
   SOVEREIGN_ALM_ABI,
-  ADDRESSES,
 } from "@/contracts";
-
-// Re-export for other components
-export { TOKENS };
-
-// Hard-set to your deployed pool
-
-// Fallback if pool.swapFeeModule() is zero — matches `NEXT_PUBLIC_SWAP_FEE_MODULE`
-const SWAP_FEE_MODULE_FALLBACK = ADDRESSES.SWAP_FEE_MODULE;
-
-// --- Debug ABIs ---
-const DECIMALS_ABI = [
-  {
-    type: "function",
-    name: "decimals",
-    stateMutability: "view",
-    inputs: [],
-    outputs: [{ type: "uint8" }],
-  },
-] as const;
+import { useMarket } from "@/app/context/MarketContext";
+import type { TokenMeta } from "@/app/lib/marketConfig";
+import { useMarketEvmDecimals } from "@/app/hooks/useMarketEvmDecimals";
+import { extractFeeInBipsFromModuleReturn } from "@/app/lib/feeSkewMath";
 
 const BALANCE_OF_ABI = [
   {
@@ -50,10 +33,10 @@ const BALANCE_OF_ABI = [
 const ALM_SPOT_ABI = [
   {
     type: "function",
-    name: "getSpotPriceUSDCperPURR",
+    name: "getSpotPriceUsdcPerBase",
     stateMutability: "view",
     inputs: [],
-    outputs: [{ name: "pxUSDCperPURR", type: "uint256" }],
+    outputs: [{ name: "pxUsdcPerBase", type: "uint256" }],
   },
 ] as const;
 
@@ -75,23 +58,6 @@ function asBigint(v: any): bigint {
   } catch {
     return 0n;
   }
-}
-
-function extractFeeBips(feeDataRaw: any): bigint {
-  // Most common: { feeInBips, internalContext }
-  if (feeDataRaw?.feeInBips != null) return asBigint(feeDataRaw.feeInBips);
-
-  // Sometimes: [feeInBips, internalContext]
-  if (Array.isArray(feeDataRaw) && feeDataRaw.length > 0)
-    return asBigint(feeDataRaw[0]);
-
-  // Sometimes nested: { data: { feeInBips } } or { 0: { feeInBips } }
-  if (feeDataRaw?.data?.feeInBips != null)
-    return asBigint(feeDataRaw.data.feeInBips);
-  if (feeDataRaw?.[0]?.feeInBips != null)
-    return asBigint(feeDataRaw[0].feeInBips);
-
-  return 0n;
 }
 
 function extractAmountOut(almQuoteRaw: any): bigint {
@@ -124,7 +90,7 @@ function TokenInput({
   onMaxClick,
 }: {
   label: string;
-  token: (typeof TOKENS)[keyof typeof TOKENS];
+  token: TokenMeta;
   amount: string;
   onAmountChange?: (value: string) => void;
   balance?: string;
@@ -187,53 +153,59 @@ function TokenInput({
 // ═══════════════════════════════════════════════════════════════
 export default function SwapCard() {
   const { address, isConnected } = useAccount();
+  const { market } = useMarket();
+  const pool = market.pool;
+  const SWAP_FEE_MODULE_FALLBACK = market.swapFeeModule;
 
-  const [sellToken, setSellToken] = useState<"PURR" | "USDC">("USDC");
+  const [sellToken, setSellToken] = useState<"USDC" | "BASE">("USDC");
   const [amountIn, setAmountIn] = useState("");
   const [amountOut, setAmountOut] = useState("");
-  const [slippage, setSlippage] = useState("0.5");
-  const [showSettings, setShowSettings] = useState(false);
 
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
   const [approvalNonce, setApprovalNonce] = useState(0);
 
-  const buyToken = sellToken === "PURR" ? "USDC" : "PURR";
-  const tokenIn = TOKENS[sellToken];
-  const tokenOut = TOKENS[buyToken];
+  const buyKey: "USDC" | "BASE" = sellToken === "USDC" ? "BASE" : "USDC";
+  const tokenIn = market.tokens[sellToken];
+  const tokenOut = market.tokens[buyKey];
+
+  const { baseDecimals: evmBaseDec, usdcDecimals: evmUsdcDec } =
+    useMarketEvmDecimals();
+  const tokenInDecimals = sellToken === "BASE" ? evmBaseDec : evmUsdcDec;
+  const tokenOutDecimals = sellToken === "USDC" ? evmBaseDec : evmUsdcDec;
 
   const amountInParsed = useMemo(() => {
     if (!amountIn || isNaN(Number(amountIn))) return 0n;
     try {
-      return parseUnits(amountIn, tokenIn.decimals);
+      return parseUnits(amountIn, tokenInDecimals);
     } catch {
       return 0n;
     }
-  }, [amountIn, tokenIn.decimals]);
+  }, [amountIn, tokenInDecimals]);
 
   // Pool reads
   const { data: poolToken0 } = useReadContract({
-    address: ADDRESSES.POOL,
+    address: pool,
     abi: SOVEREIGN_POOL_ABI,
     functionName: "token0",
     query: { enabled: true },
   });
 
   const { data: poolAlm } = useReadContract({
-    address: ADDRESSES.POOL,
+    address: pool,
     abi: SOVEREIGN_POOL_ABI,
     functionName: "alm",
     query: { enabled: true },
   });
 
   const { data: poolSwapFeeModule } = useReadContract({
-    address: ADDRESSES.POOL,
+    address: pool,
     abi: SOVEREIGN_POOL_ABI,
     functionName: "swapFeeModule",
     query: { enabled: true },
   });
 
   const isZeroToOne = useMemo(() => {
-    if (!poolToken0) return sellToken === "PURR";
+    if (!poolToken0) return sellToken === "BASE";
     return (
       tokenIn.address.toLowerCase() === (poolToken0 as string).toLowerCase()
     );
@@ -247,38 +219,22 @@ export default function SwapCard() {
 
   // Vault address (this is what BOTH contracts use)
   const { data: vaultAddr } = useReadContract({
-    address: ADDRESSES.POOL,
+    address: pool,
     abi: SOVEREIGN_POOL_ABI,
     functionName: "sovereignVault",
     query: { enabled: true },
   });
 
-  // On-chain decimals (don’t trust TOKENS config)
-  const { data: usdcDecOnchain } = useReadContract({
-    address: TOKENS.USDC.address,
-    abi: DECIMALS_ABI,
-    functionName: "decimals",
-    query: { enabled: true },
-  });
-
-  const { data: purrDecOnchain } = useReadContract({
-    address: TOKENS.PURR.address,
-    abi: DECIMALS_ABI,
-    functionName: "decimals",
-    query: { enabled: true },
-  });
-
-  // Vault balances (raw)
   const { data: vaultUsdcRaw } = useReadContract({
-    address: TOKENS.USDC.address,
+    address: market.tokens.USDC.address,
     abi: BALANCE_OF_ABI,
     functionName: "balanceOf",
     args: vaultAddr ? [vaultAddr as `0x${string}`] : undefined,
     query: { enabled: !!vaultAddr },
   });
 
-  const { data: vaultPurrRaw } = useReadContract({
-    address: TOKENS.PURR.address,
+  const { data: vaultBaseRaw } = useReadContract({
+    address: market.tokens.BASE.address,
     abi: BALANCE_OF_ABI,
     functionName: "balanceOf",
     args: vaultAddr ? [vaultAddr as `0x${string}`] : undefined,
@@ -289,7 +245,7 @@ export default function SwapCard() {
   const { data: spotPxRaw } = useReadContract({
     address: (poolAlm as `0x${string}`) || undefined,
     abi: ALM_SPOT_ABI,
-    functionName: "getSpotPriceUSDCperPURR",
+    functionName: "getSpotPriceUsdcPerBase",
     query: { enabled: !!poolAlm },
   });
 
@@ -311,7 +267,7 @@ export default function SwapCard() {
   });
 
   const balance = balanceRaw
-    ? formatUnits(balanceRaw, tokenIn.decimals)
+    ? formatUnits(balanceRaw, tokenInDecimals)
     : undefined;
 
   // Allowance
@@ -319,13 +275,13 @@ export default function SwapCard() {
     address: tokenIn.address,
     abi: ERC20_ABI,
     functionName: "allowance",
-    args: address ? [address, ADDRESSES.POOL] : undefined,
+    args: address ? [address, pool] : undefined,
     query: {
       enabled: !!address && amountInParsed > 0n,
       staleTime: 0,
       gcTime: 0,
     },
-    scopeKey: `allowance-${sellToken}-${approvalNonce}`,
+    scopeKey: `allowance-${sellToken}-${market.id}-${approvalNonce}`,
   });
 
   const needsApproval = useMemo(() => {
@@ -361,7 +317,10 @@ export default function SwapCard() {
     },
   });
 
-  const feeBips = useMemo(() => extractFeeBips(feeDataRaw), [feeDataRaw]);
+  const feeBips = useMemo(
+    () => extractFeeInBipsFromModuleReturn(feeDataRaw),
+    [feeDataRaw]
+  );
   const feePct = useMemo(() => Number(feeBips) / 100, [feeBips]);
 
   const amountInMinus = useMemo(() => {
@@ -410,9 +369,9 @@ export default function SwapCard() {
       setAmountOut("");
       return;
     }
-    if (quotedOut > 0n) setAmountOut(formatUnits(quotedOut, tokenOut.decimals));
+    if (quotedOut > 0n) setAmountOut(formatUnits(quotedOut, tokenOutDecimals));
     else setAmountOut("");
-  }, [amountIn, amountInParsed, quotedOut, tokenOut.decimals]);
+  }, [amountIn, amountInParsed, quotedOut, tokenOutDecimals]);
 
   // Writes + receipt
   const { writeContractAsync, isPending } = useWriteContract();
@@ -429,44 +388,45 @@ export default function SwapCard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isSuccess]);
   useEffect(() => {
+    if (process.env.NEXT_PUBLIC_DEBUG_SWAP !== "true") return;
     if (!vaultAddr) return;
 
-    const usdcDec = 6;
-    const purrDec = 5;
+    const usdcDec = evmUsdcDec;
+    const baseDec = evmBaseDec;
 
     const vu = vaultUsdcRaw ?? 0n;
-    const vp = vaultPurrRaw ?? 0n;
+    const vp = vaultBaseRaw ?? 0n;
 
     const spot = spotPxRaw ?? 0n;
 
-    // Interpreting spot as "USDC per 1 PURR" scaled by 10^USDCdec (your ALM assumption)
+    // Interpreting spot as "USDC per 1 base" scaled by 10^USDCdec (ALM convention)
     const spotAsNumber = usdcDec > 0 ? Number(spot) / 10 ** usdcDec : NaN;
 
-    // Also show implied "PURR per 1 USDC" (reciprocal)
+    // Also show implied "base per 1 USDC" (reciprocal)
     const impliedPurrPerUsdc =
       spotAsNumber && spotAsNumber > 0 ? 1 / spotAsNumber : NaN;
 
     console.groupCollapsed("[SWAP DEBUG]");
-    console.log("Pool:", ADDRESSES.POOL);
+    console.log("Pool:", pool);
     console.log("ALM:", poolAlm);
     console.log("FeeModule:", feeModuleAddress);
     console.log("Vault (pool.sovereignVault()):", vaultAddr);
 
     console.log(
       "USDC address:",
-      TOKENS.USDC.address,
+      market.tokens.USDC.address,
       "decimals(onchain):",
       usdcDec,
       "decimals(config):",
-      TOKENS.USDC.decimals,
+      market.tokens.USDC.decimals,
     );
     console.log(
-      "PURR address:",
-      TOKENS.PURR.address,
+      `${market.baseSymbol} address:`,
+      market.tokens.BASE.address,
       "decimals(onchain):",
-      purrDec,
+      baseDec,
       "decimals(config):",
-      TOKENS.PURR.decimals,
+      market.tokens.BASE.decimals,
     );
 
     console.log(
@@ -476,21 +436,18 @@ export default function SwapCard() {
       usdcDec ? formatUnits(vu, usdcDec) : "(no dec)",
     );
     console.log(
-      "Vault PURR raw:",
+      `Vault ${market.baseSymbol} raw:`,
       vp.toString(),
       "formatted:",
-      purrDec ? formatUnits(vp, purrDec) : "(no dec)",
+      baseDec ? formatUnits(vp, baseDec) : "(no dec)",
     );
 
-    console.log("Spot px raw (PURR per USDC scaled):", spot.toString());
-    console.log("Spot px interpreted (PURR/USDC):", spotAsNumber);
-    console.log("Implied PURR/USDC:", spotAsNumber);
+    console.log("Spot px raw:", spot.toString());
+    console.log("Spot px interpreted:", spotAsNumber);
 
-    // For your specific test: 0.001 USDC -> expected ~0.0047 PURR if 1 USDC = 4.7 PURR
-    if (amountInParsed > 0n && usdcDec > 0 && purrDec > 0 && spot > 0n) {
-      // expected out using your ALM formula:
-      // out = amountInRaw * 10^purrDec / spotPxRaw
-      const expectedOutRaw = (amountInParsed * BigInt(10 ** purrDec)) / spot;
+    if (amountInParsed > 0n && usdcDec > 0 && baseDec > 0 && spot > 0n) {
+      const scale = 10n ** BigInt(baseDec);
+      const expectedOutRaw = (amountInParsed * scale) / spot;
       console.log(
         "amountInParsed:",
         amountInParsed.toString(),
@@ -502,7 +459,7 @@ export default function SwapCard() {
         "expectedOutRaw (using spotPxRaw):",
         expectedOutRaw.toString(),
         "formatted:",
-        formatUnits(expectedOutRaw, purrDec),
+        formatUnits(expectedOutRaw, baseDec),
       );
     }
 
@@ -511,16 +468,18 @@ export default function SwapCard() {
     vaultAddr,
     poolAlm,
     feeModuleAddress,
-    usdcDecOnchain,
-    purrDecOnchain,
+    evmUsdcDec,
+    evmBaseDec,
     vaultUsdcRaw,
-    vaultPurrRaw,
+    vaultBaseRaw,
     spotPxRaw,
     amountInParsed,
+    pool,
+    market,
   ]);
 
   const handleFlip = () => {
-    setSellToken(buyToken);
+    setSellToken(buyKey);
     setAmountIn(amountOut);
     setAmountOut(amountIn);
   };
@@ -536,7 +495,7 @@ export default function SwapCard() {
         address: tokenIn.address,
         abi: ERC20_ABI,
         functionName: "approve",
-        args: [ADDRESSES.POOL, maxUint256],
+        args: [pool, maxUint256],
       });
       setTxHash(hash);
     } catch (err) {
@@ -548,12 +507,8 @@ export default function SwapCard() {
     if (!address || !amountInParsed) return;
 
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 60 * 20);
-    const slippageBps = Math.floor(Number(slippage) * 100);
-
-    const minOut =
-      quotedOut > 0n
-        ? (quotedOut * BigInt(10_000 - slippageBps)) / 10_000n
-        : 0n;
+    // No user slippage: min out = ALM quote output (dynamic fee already in quote path)
+    const minOut = quotedOut > 0n ? quotedOut : 0n;
 
     const params = {
       isSwapCallback: false,
@@ -573,7 +528,7 @@ export default function SwapCard() {
 
     try {
       const hash = await writeContractAsync({
-        address: ADDRESSES.POOL,
+        address: pool,
         abi: SOVEREIGN_POOL_ABI,
         functionName: "swap",
         args: [params],
@@ -674,7 +629,7 @@ export default function SwapCard() {
             </div>
 
             <div className="flex items-center justify-between gap-3 text-[var(--text-muted)] mt-2">
-              <span>Fee (dynamic)</span>
+              <span>Swap fee (module)</span>
               <span className="text-[var(--foreground)]">
                 {feePct.toFixed(2)}%{" "}
                 <span className="text-[var(--text-muted)]">
@@ -682,11 +637,12 @@ export default function SwapCard() {
                 </span>
               </span>
             </div>
-
-            <div className="flex items-center justify-between gap-3 text-[var(--text-muted)] mt-2">
-              <span>Slippage</span>
-              <span className="text-[var(--foreground)]">{slippage}%</span>
-            </div>
+            <p className="text-[10px] text-[var(--text-muted)] mt-1.5 leading-snug">
+              From <code className="text-[9px]">getSwapFeeInBips</code> for this
+              trade. The pool&apos;s{" "}
+              <code className="text-[9px]">defaultSwapFeeBips</code> in Strategist
+              is only used when no fee module is set.
+            </p>
           </div>
         )}
 

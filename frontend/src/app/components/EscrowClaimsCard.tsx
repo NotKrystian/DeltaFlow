@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from "wagmi";
-import { ADDRESSES, HEDGE_ESCROW_ABI } from "@/contracts";
+import { HEDGE_ESCROW_ABI } from "@/contracts";
+import { useMarket } from "@/app/context/MarketContext";
 
 const API_BASE =
   typeof process !== "undefined"
-    ? process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:8000"
-    : "http://127.0.0.1:8000";
+    ? process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://127.0.0.1:3000"
+    : "http://127.0.0.1:3000";
 
 type EscrowTradeRow = {
   id: number;
@@ -21,13 +22,14 @@ type EscrowTradeRow = {
 
 export default function EscrowClaimsCard() {
   const { address, isConnected } = useAccount();
+  const { market } = useMarket();
   const [rows, setRows] = useState<Record<number, EscrowTradeRow>>({});
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   const escrowConfigured = useMemo(
-    () => ADDRESSES.HEDGE_ESCROW !== "0x0000000000000000000000000000000000000000",
-    []
+    () => market.hedgeEscrow !== "0x0000000000000000000000000000000000000000",
+    [market.hedgeEscrow]
   );
 
   const fetchTrades = useCallback(async () => {
@@ -77,7 +79,7 @@ export default function EscrowClaimsCard() {
 
   const claim = (id: number) => {
     writeContract({
-      address: ADDRESSES.HEDGE_ESCROW,
+      address: market.hedgeEscrow,
       abi: HEDGE_ESCROW_ABI,
       functionName: "claimPurrBuy",
       args: [BigInt(id)],
@@ -87,7 +89,8 @@ export default function EscrowClaimsCard() {
   if (!escrowConfigured) {
     return (
       <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 text-sm text-[var(--text-muted)]">
-        Sync env from deploy (<code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW</code>) —{" "}
+        Sync env from deploy (<code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW</code> or{" "}
+        <code className="text-xs">NEXT_PUBLIC_HEDGE_ESCROW_WETH</code>) —{" "}
         <code className="text-xs">HedgeEscrow</code> is deployed with every stack.
       </div>
     );
@@ -108,7 +111,8 @@ export default function EscrowClaimsCard() {
       <p className="text-sm text-[var(--text-muted)]">
         Trades are opened on-chain via <code className="text-xs">HedgeEscrow</code> → CoreWriter. This panel uses the
         backend snapshot (precompile + <code className="text-xs">canClaimBuy</code>) so you know when to call{" "}
-        <code className="text-xs">claimPurrBuy</code>.
+        <code className="text-xs">claimPurrBuy</code>. The API may only index the primary escrow in{" "}
+        <code className="text-xs">backend/.env</code>; claims still hit the escrow for the market selected in the header.
       </p>
       {err && <p className="text-sm text-red-400">{err}</p>}
       {writeErr && <p className="text-sm text-red-400">{writeErr.message}</p>}
@@ -141,7 +145,7 @@ export default function EscrowClaimsCard() {
                 onClick={() => claim(t.id)}
                 className="text-sm px-4 py-2 rounded-lg bg-emerald-600 text-white disabled:opacity-50"
               >
-                {isPending || confirming ? "Confirming…" : "Claim PURR"}
+                {isPending || confirming ? "Confirming…" : `Claim ${market.baseSymbol}`}
               </button>
             )}
           </li>

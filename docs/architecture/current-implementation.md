@@ -27,7 +27,7 @@ sequenceDiagram
 2. **Pair** — Typically **USDC** + **base** (e.g. **PURR** with **5** decimals on testnet, or **WETH** with **18** decimals). The UI must match token decimals for the deployed pool.
 
 3. **Pricing** — Output amounts are **not** from constant-product reserves. **`SovereignALM`**:
-   - Reads **`PrecompileLib.normalizedSpotPx(spotIndex)`** for the configured market and derives **USDC per 1 base** (`getSpotPriceUSDCperPURR` — name is historical; math is USDC per base).
+   - Reads **`PrecompileLib.normalizedSpotPx(spotIndex)`** for the configured market and derives **USDC per 1 base** via **`getSpotPriceUsdcPerBase`** on the ALM.
    - Computes **`amountOut`** from **`amountInMinusFee`** using spot math only.
    - **Reverts** if the **sovereign vault** cannot cover **`tokenOut`** plus a configured **liquidity buffer** (bps).
 
@@ -56,6 +56,25 @@ flowchart TB
 
 Env knobs are prefixed with **`DF_`** and **`SURPLUS_FRACTION_BPS`** / **`VOLATILE_REGIME`** — see [`deploy/testnet.env.example`](../../deploy/testnet.env.example).
 
+**Unwind vs new risk (memo-style blend):** The composite module estimates the swap’s effect on **perp hedge size** (`deltaSz`) and compares **`|perpSzi|` before vs after** the trade. When **`absPost < absPre`**, the trade **reduces** absolute hedge exposure → an **unwind-leaning** fee uses **`DeltaFeeHelper.unwindFeeBpsIntegral`**; otherwise **new-risk** components use **`newRiskFeeBpsHtml`**. The displayed fee is a **blend** (`blendedQuoteBpsHtml`). This is **independent** of **`SovereignVault.lastHedgeLeg`** (which records the vault’s last **IOC leg**: open-only, reduce-only, or unwind-then-open).
+
+```mermaid
+flowchart TB
+  subgraph composite[DeltaFlowCompositeFeeModule.getSwapFeeInBips]
+    S[BalanceSheetLib.snapshot + pending hedge queues]
+    D[Estimate deltaSz from trade]
+    P[perpPre + deltaSz → absPost]
+    Q{absPost < absPre ?}
+    S --> D
+    D --> P
+    P --> Q
+    Q -->|yes: unwind fraction| U[unwindFeeBpsIntegral]
+    Q -->|no: new risk| N[newRiskFeeBpsHtml clamped]
+    U --> B[blendedQuoteBpsHtml → feeInBips]
+    N --> B
+  end
+```
+
 ### Alternative: balance-seeking V3 (`DEPLOY_DELTAFLOW_FEE=false`)
 
 On-chain fees come from **`BalanceSeekingSwapFeeModuleV3`** (`SwapFeeModuleV3.sol`) when wired as the pool’s swap fee module; otherwise the pool uses its **default fee in bips**.
@@ -79,7 +98,7 @@ The **pool** converts **`feeInBips`** into **`amountInWithoutFee`**, passes that
 | Layer | Behavior |
 |-------|------------|
 | **Pool / users** | Trades are **EVM transactions** (`swap`). No Hyperliquid CEX order is required for the user’s swap. |
-| **SovereignVault (per-swap perp hedge)** | Before paying **`tokenOut`**, **`SovereignPool`** calls **`processSwapHedge`** on the vault (external vault only). The vault sizes the hedge from the **PURR leg**, may **escrow** the quoted output until a hedge batch is large enough, then sends **IOC** + pays queued recipients. See [On-chain per-swap perp hedge](#on-chain-per-swap-perp-hedge-and-batch-queue) below. |
+| **SovereignVault (per-swap perp hedge)** | Before paying **`tokenOut`**, **`SovereignPool`** calls **`processSwapHedge`** on the vault (external vault only). The vault sizes the hedge from the **base** leg, may **escrow** the quoted output until a hedge batch is large enough, then sends **IOC** + pays queued recipients. See [On-chain per-swap perp hedge](#on-chain-per-swap-perp-hedge-and-batch-queue) below. |
 | **Backend** (`server.py`) | Subscribes to **`Swap`** logs, serves **`/escrow/trades`** when **`HEDGE_ESCROW`** is set — **no** HL API order execution for either path. |
 | **Hedge escrow** | **Separate** product surface: users call **`HedgeEscrow.openBuyPurrWithUsdc`** for CoreWriter **spot** limit orders + claim; not the same as vault per-swap perp hedging. |
 
@@ -93,10 +112,26 @@ Implemented in **`SovereignVault`** using **`CoreWriterLib`** and **`PrecompileL
 
 | Direction | Function(s) | Meaning |
 |-----------|-------------|---------|
-| **EVM → Core (balance only)** | `bridgeToCoreOnly` | USDC moves from the EVM vault into **HyperCore** without a vault deposit. |
+| **EVM → Core (bootstrap)** | `bootstrapHyperCoreAccount(usdcAmount)` | Strategist-only; bridges **≥ `MIN_CORE_BOOTSTRAP_USDC`** (1 USDC in 6-decimal wei) in a **dedicated tx** so the vault’s **HyperCore spot account** exists before heavier CoreWriter flows. |
+| **EVM → Core (balance only)** | `bridgeToCoreOnly` | USDC moves from the EVM vault into **HyperCore** without a Core vault deposit. |
+| **EVM → Core (any linked ERC20)** | `bridgeInventoryTokenToCore(token, amount)` | Moves **base** (or other linked) inventory from the vault to **HyperCore spot** — use when you need **non-USDC** on Core for hedging / spot (e.g. USDC tight on Core but excess base on EVM). |
+| **EVM → Core (native HYPE)** | `fundCoreWithHype` (payable) | Bridges **native HYPE** on HyperEVM to Core for **gas / fees** on Core (spot send, etc.). |
 | **EVM → Core vault (yield / allocation)** | `allocate` | `bridgeToCore` then `vaultTransfer(coreVault, true, …)` into a **Core vault**; **`allocatedToCoreVault`** / **`totalAllocatedUSDC`** track exposure. |
 | **Core vault → EVM** | `deallocate` | `vaultTransfer(coreVault, false, …)` then `bridgeToEvm`. |
 | **Core → EVM (no vault pull)** | `bridgeToEvmOnly` | When USDC is already positioned appropriately in Core. |
+| **Hedge queue (flush)** | `forceFlushHedgeBatch` | Anyone; runs pending buy/sell hedge batches **IOC + payouts** even if below the normal threshold. |
+| **Perp margin → EVM USDC** | `pullPerpUsdcToEvm(maxEvmAmount)` | Moves USDC from perp → spot → EVM up to a cap. |
+| **Core spot → EVM token** | `pullCoreSpotTokenToEvm(token, maxEvmAmount)` | Pulls a linked spot asset from Core to EVM (requires Core spot balance + HYPE on Core for `spotSend` per HL docs). |
+
+```mermaid
+flowchart LR
+  V[SovereignVault HyperEVM]
+  HC[HyperCore spot / perp]
+  V -->|bootstrap / bridgeToCore* / bridgeInventory / fundCoreWithHype| HC
+  HC -->|bridgeToEvm / pullPerp* / pullCoreSpot*| V
+```
+
+**UI:** The **Strategist** page calls these when connected as **`strategist`**. **ALM spot price** for LP math uses **`getSpotPriceUsdcPerBase()`** (USDC per 1 base, USDC-decimal scale).
 
 ### During swaps
 
@@ -115,7 +150,7 @@ If the pool must pay USDC from the vault and **EVM USDC balance is insufficient*
 
 **Product intent:** User swaps against **`SovereignPool`** are fulfilled from **`SovereignVault`** inventory when the vault is external to the pool. **Protocol perp hedging** on each swap is enforced on-chain (see below); **`HedgeEscrow`** adds a separate **user-driven spot** hedge surface.
 
-- **Perpetuals** — Primary tool to **offset vault delta** when users trade the base: the vault places **perp IOC** orders aligned with the PURR leg of each swap (long perp when the vault paid base out, short when it received base in).
+- **Perpetuals** — Primary tool to **offset vault delta** when users trade the base: the vault places **perp IOC** orders aligned with the **base** leg of each swap (long perp when the vault paid base out, short when it received base in). **`_netHedgePosition`** applies **reduce-only** IOCs first when closing an opposing perp leg, then opens any remainder.
 - **HyperCore spot** — Used when **EVM inventory is too small** to fill a trade (`sendTokensToRecipient` path), and via **`HedgeEscrow`** for optional user-initiated spot orders—distinct from the vault’s per-swap perp hedge.
 
 ### On-chain per-swap perp hedge and batch queue
@@ -124,7 +159,7 @@ When **`sovereignVault != SovereignPool`** (standard **`AmmDeployBase`** / **`De
 
 1. **Pair binding (immutable)** — The pool is constructed with **`hedgePerpAssetIndex`**, the Hyperliquid **perp universe asset index** for that market’s base (e.g. PURR perp). The vault stores **`hedgePerpAssetIndex`** (strategist-set). **Every `swap` reverts** unless **`vault.hedgePerpAssetIndex() == pool.hedgePerpAssetIndex()`** and the value is **non-zero** (`SovereignPool__swap_hedgePerpMismatch`). So swaps are not allowed if hedging is misconfigured or disabled on the vault.
 
-2. **Before `tokenOut`** — After pool state updates (and oracle write), **`SovereignPool`** computes the **base (PURR) leg** in wei: **`amountOut`** when the user receives base, or **`amountInFilled`** when the user sells base. It calls **`SovereignVault.processSwapHedge(vaultPurrOut, purrWei, swapTokenOut, recipient, amountOut)`** which returns **`poolShouldSendTokenOut`**.
+2. **Before `tokenOut`** — After pool state updates (and oracle write), **`SovereignPool`** computes the **base leg** in wei: **`amountOut`** when the user receives base, or **`amountInFilled`** when the user sells base. It calls **`SovereignVault.processSwapHedge(vaultPurrOut, purrWei, swapTokenOut, recipient, amountOut)`** (parameters are still named `purr*` historically; they refer to the pool **base** token) which returns **`poolShouldSendTokenOut`**.
 
 3. **Sizing** — The vault converts EVM base amount → Core **wei** → HL **`sz`**. Dust **`sz == 0`** → returns **`true`** (pool sends output as normal; no hedge).
 
@@ -210,10 +245,10 @@ Do **not** confuse **perp universe** ids with the **`asset`** field for **spot**
 ## Related code paths
 
 - `contracts/src/SovereignPool.sol` — `swap`, fee module hook, ALM quote, **`processSwapHedge`** then conditional **`sendTokensToRecipient`**, **`hedgePerpAssetIndex`** (must match vault).
-- `contracts/src/SovereignALM.sol` — spot quote and vault liquidity check.
+- `contracts/src/SovereignALM.sol` — spot quote (**`getSpotPriceUsdcPerBase`**) and vault liquidity check.
 - `contracts/src/deltaflow/` — **`DeltaFlowCompositeFeeModule`**, **`DeltaFlowRiskEngine`**, **`FeeSurplus`**, **`DeltaFlowFeeMath`** (default fee path when **`DEPLOY_DELTAFLOW_FEE=true`**).
 - `contracts/src/SwapFeeModuleV3.sol` — balance-seeking fee in bips (**`DEPLOY_DELTAFLOW_FEE=false`**).
-- `contracts/src/SovereignVault.sol` — LP, Core bridge/allocate, `sendTokensToRecipient`, **`processSwapHedge`** / escrow queues (**`minPerpHedgeSz`**, **`pendingHedge*Sz`**, **`_pendingPayoutsBuy` / `_pendingPayoutsSell`**).
+- `contracts/src/SovereignVault.sol` — LP, Core bridge/allocate, **`bootstrapHyperCoreAccount`**, **`bridgeInventoryTokenToCore`**, **`fundCoreWithHype`**, **`forceFlushHedgeBatch`**, **`pullPerpUsdcToEvm`**, **`pullCoreSpotTokenToEvm`**, `sendTokensToRecipient`, **`processSwapHedge`** / **`lastHedgeLeg`** / escrow queues (**`minPerpHedgeSz`**, **`pendingHedge*Sz`**, **`_pendingPayoutsBuy` / `_pendingPayoutsSell`**).
 - `contracts/src/HedgeEscrow.sol` — CoreWriter limit orders + `claimPurrBuy`.
 - `backend/server.py` — swap log listener + escrow status polling.
 - `contracts/script/DeployHedgeEscrow.s.sol` — standalone **`HedgeEscrow`** deploy with precompile-derived indices.

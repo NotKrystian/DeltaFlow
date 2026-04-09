@@ -16,9 +16,10 @@ export default function RemoveLiquidityCard() {
         </div>
         <p className="text-sm text-[var(--text-muted)] mb-6">
           Burning DeltaFlow LP (<strong>DFLP</strong>) and receiving pro-rata USDC
-          and PURR is done with <code className="text-[var(--foreground)]">withdrawLP</code>{" "}
-          on the vault. Use the LP dashboard for share-based withdrawal and
-          reserves.
+          and the pool base asset (PURR or WETH) is done with{" "}
+          <code className="text-[var(--foreground)]">withdrawLP</code> on the vault.
+          Use the LP dashboard for share-based withdrawal and reserves. Pick the
+          market (PURR vs WETH) in the header.
         </p>
         <Link
           href="/lp"

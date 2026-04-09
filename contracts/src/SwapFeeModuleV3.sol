@@ -5,6 +5,10 @@ import {ISwapFeeModule, SwapFeeModuleData} from "./swap-fee-modules/interfaces/I
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
+import {HLConversions} from "@hyper-evm-lib/src/common/HLConversions.sol";
+
+import {BalanceSheet} from "./deltaflow/DeltaFlowTypes.sol";
+import {BalanceSheetLib} from "./deltaflow/BalanceSheetLib.sol";
 
 /*//////////////////////////////////////////////////////////////
                         Minimal Pool Interface
@@ -15,12 +19,22 @@ interface ISovereignPoolLite {
     function sovereignVault() external view returns (address);
 }
 
+/// @notice Vault hedge config + pending perp IOC queue (see `SovereignVault`).
+interface ISovereignVaultHedgeView {
+    function hedgePerpAssetIndex() external view returns (uint32);
+    function pendingHedgeBuySz() external view returns (uint256);
+    function pendingHedgeSellSz() external view returns (uint256);
+}
+
 /**
  * BalanceSeekingSwapFeeModuleV3 (decimals-correct, vault-based)
  *
  * Uses the same spot price convention as SovereignALM: `pxUSDCperBase` in USDC raw units per 1 whole base token.
  * The immutable `purr` is the non-USDC side (PURR, WETH, etc.).
- * Imbalance fee: raw USDC vault balance vs base holdings valued at spot (aligned with ALM).
+ * Imbalance fee: `devBps` uses **aggregated** balance sheet state (EVM + HyperCore spot balances on the
+ * vault) and **effective** base exposure = spot base + signed perp (`szi` + pending hedge queue in `sz`
+ * per `BalanceSheetLib`), then projects **post-swap** spot legs with fixed-point `amountInNet` ↔ fee.
+ * Pricing uses the same ALM spot px convention as elsewhere (`spotIndexPURR` / `rawPxScale`).
  */
 contract BalanceSeekingSwapFeeModuleV3 is ISwapFeeModule {
     address public immutable sovereignPool;
@@ -47,6 +61,7 @@ contract BalanceSeekingSwapFeeModuleV3 is ISwapFeeModule {
     error ZeroVaultBalance(address vault, address token);
     error InsufficientVaultLiquidity(address vault, address tokenOut, uint256 balOut, uint256 neededOut);
     error PriceZero();
+    error PerpSziOverflow();
 
     constructor(
         address _sovereignPool,
@@ -121,35 +136,80 @@ contract BalanceSeekingSwapFeeModuleV3 is ISwapFeeModule {
             return data;
         }
 
-        uint256 U = IERC20Metadata(usdc).balanceOf(vault);
-        uint256 P = IERC20Metadata(purr).balanceOf(vault);
-        if (U == 0) revert ZeroVaultBalance(vault, usdc);
-        if (P == 0) revert ZeroVaultBalance(vault, purr);
+        uint256 evmU = IERC20Metadata(usdc).balanceOf(vault);
+        uint256 evmP = IERC20Metadata(purr).balanceOf(vault);
+        if (evmU == 0) revert ZeroVaultBalance(vault, usdc);
+        if (evmP == 0) revert ZeroVaultBalance(vault, purr);
 
         uint256 px = _pxUSDCperBase();
 
-        uint256 estOutRaw = _estimateOutAtSpotRaw(tokenIn, tokenOut, amountIn, px);
-        if (estOutRaw > 0) {
-            uint256 needed = Math.mulDiv(estOutRaw, (BIPS + liquidityBufferBps), BIPS);
+        ISovereignVaultHedgeView vh = ISovereignVaultHedgeView(vault);
+        uint32 perpIx = vh.hedgePerpAssetIndex();
+        uint32 perpSnap = perpIx == 0 ? type(uint32).max : perpIx;
+
+        BalanceSheet memory sheet = BalanceSheetLib.snapshot(
+            vault,
+            usdc,
+            purr,
+            perpSnap,
+            spotIndexPURR,
+            0,
+            0,
+            rawPxScale,
+            rawIsPurrPerUsdc,
+            vh.pendingHedgeBuySz(),
+            vh.pendingHedgeSellSz()
+        );
+
+        uint256 U_agg = sheet.evmUsdc + sheet.coreUsdc;
+        uint256 P_agg = sheet.evmBase + sheet.coreBase;
+        int256 perpBaseWei = _perpSziToSignedBaseWei(sheet.perpSzi);
+
+        // Conservative liquidity check: upper bound on out at spot (gross amountIn).
+        uint256 estOutLiquidity = _estimateOutAtSpotRaw(tokenIn, tokenOut, amountIn, px);
+        if (estOutLiquidity > 0) {
+            uint256 needed = Math.mulDiv(estOutLiquidity, (BIPS + liquidityBufferBps), BIPS);
             uint256 balOut = IERC20Metadata(tokenOut).balanceOf(vault);
             if (balOut < needed) revert InsufficientVaultLiquidity(vault, tokenOut, balOut, needed);
         }
 
-        uint256 left = U;
-        uint256 right = Math.mulDiv(P, px, _pow10(baseDec));
+        // Fixed-point: fee ↔ amountInNet ↔ projected post-swap spot legs; perp + queue unchanged over the swap tx.
+        uint256 feeBips = baseFeeBips;
+        for (uint256 iter = 0; iter < 8; ++iter) {
+            uint256 amountInNet = Math.mulDiv(amountIn, BIPS, BIPS + feeBips);
+            uint256 estOutSwap = _estimateOutAtSpotRaw(tokenIn, tokenOut, amountInNet, px);
 
-        if (right == 0) {
-            data.feeInBips = _clampFee(baseFeeBips);
-            return data;
+            uint256 Uf;
+            uint256 Pf;
+            if (tokenIn == usdc && tokenOut == purr) {
+                Uf = U_agg + amountIn;
+                Pf = P_agg - estOutSwap;
+            } else {
+                Pf = P_agg + amountIn;
+                Uf = U_agg - estOutSwap;
+            }
+
+            uint256 left = Uf;
+            uint256 right = _effectiveBaseSideUsdcRaw(Pf, perpBaseWei, px);
+
+            if (right == 0) {
+                data.feeInBips = _clampFee(baseFeeBips);
+                return data;
+            }
+
+            uint256 diff = left > right ? (left - right) : (right - left);
+            uint256 devBps = Math.mulDiv(diff, BIPS, right);
+            uint256 feeAddBps = (devBps / 10);
+            uint256 nextFee = _clampFee(baseFeeBips + feeAddBps);
+
+            if (nextFee == feeBips) {
+                data.feeInBips = nextFee;
+                return data;
+            }
+            feeBips = nextFee;
         }
 
-        uint256 diff = left > right ? (left - right) : (right - left);
-        uint256 devBps = Math.mulDiv(diff, BIPS, right);
-
-        uint256 feeAddBps = (devBps / 10);
-        uint256 fee = baseFeeBips + feeAddBps;
-
-        data.feeInBips = _clampFee(fee);
+        data.feeInBips = feeBips;
         return data;
     }
 
@@ -166,7 +226,35 @@ contract BalanceSeekingSwapFeeModuleV3 is ISwapFeeModule {
         return 10 ** uint256(n);
     }
 
-    /// @dev Same convention as SovereignALM.getSpotPriceUSDCperPURR.
+    /// @dev Converts signed HL `sz` (position + pending queue) to signed base token wei using `purr` token index.
+    function _perpSziToSignedBaseWei(int256 sziSz) internal view returns (int256) {
+        if (sziSz == 0) return 0;
+        uint64 tokenIx = PrecompileLib.getTokenIndex(purr);
+        if (sziSz > 0) {
+            uint256 u = uint256(sziSz);
+            if (u > type(uint64).max) revert PerpSziOverflow();
+            uint64 wei64 = HLConversions.szToWei(tokenIx, uint64(u));
+            return int256(uint256(wei64));
+        } else {
+            uint256 u = uint256(-sziSz);
+            if (u > type(uint64).max) revert PerpSziOverflow();
+            uint64 wei64 = HLConversions.szToWei(tokenIx, uint64(u));
+            return -int256(uint256(wei64));
+        }
+    }
+
+    /// @dev USDC raw value of the base leg: spot `Pf` wei + signed perp exposure in base wei, valued at `px`.
+    function _effectiveBaseSideUsdcRaw(uint256 spotBaseWei, int256 perpSignedBaseWei, uint256 px)
+        internal
+        view
+        returns (uint256)
+    {
+        int256 net = int256(spotBaseWei) + perpSignedBaseWei;
+        if (net <= 0) return 0;
+        return Math.mulDiv(uint256(net), px, _pow10(baseDec));
+    }
+
+    /// @dev Same convention as SovereignALM.getSpotPriceUsdcPerBase.
     function _pxUSDCperBase() internal view returns (uint256 pxUSDCperBase) {
         uint256 raw = PrecompileLib.normalizedSpotPx(spotIndexPURR);
         if (raw == 0) revert PriceZero();

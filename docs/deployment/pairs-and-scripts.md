@@ -40,6 +40,17 @@ Each deployment gets its own **`SovereignVault`** (its own **DFLP** LP token add
 
 After broadcast, run **`python3 scripts/sync_env_from_broadcast.py`** (or **`./scripts/deploy_all_testnet.sh`** for an all-in-one deploy) to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from **`broadcast/DeployAll.s.sol/<chain>/run-latest.json`**. For other scripts, pass **`--broadcast-json path/to/run-latest.json`**. See [Testnet asset IDs](testnet-asset-ids.md) for **`SPOT_INDEX_*`** and CoreWriter asset ids.
 
+## Frontend labels and market switcher
+
+The Next.js app reads **`NEXT_PUBLIC_*`** pool/vault/ALM addresses from **`frontend/.env.local`** (synced by the script above). When a **second** stack is deployed (`NEXT_PUBLIC_POOL_WETH` non-zero), the header **market switcher** toggles **primary** vs **secondary**.
+
+| Variable | Role |
+|----------|------|
+| `NEXT_PUBLIC_PRIMARY_BASE_SYMBOL` | Display label for the primary pool’s base token (default **`PURR`**). |
+| `NEXT_PUBLIC_SECONDARY_BASE_SYMBOL` | Display label for the secondary stack (default **`WETH`**, or **`NEXT_PUBLIC_WETH_SYMBOL`**). |
+
+The **ALM** contract exposes **`getSpotPriceUsdcPerBase()`** for spot USDC-per-base pricing (redeploy required if you still have the old **`getSpotPriceUSDCperPURR`** name).
+
 ## Fee module and decimals
 
 [`BalanceSeekingSwapFeeModuleV3`](../../contracts/src/SwapFeeModuleV3.sol) uses the **base token’s** `decimals()` and the same **`rawPxScale` / `rawIsPurrPerUsdc`** pricing as **`SovereignALM`** for imbalance and spot liquidity checks.

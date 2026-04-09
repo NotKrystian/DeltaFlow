@@ -10,9 +10,10 @@ import {
 } from "wagmi";
 import { parseUnits, formatUnits } from "viem";
 import { Plus, Loader2, ChevronDown, ArrowRight } from "lucide-react";
-import { ADDRESSES, TOKENS, ERC20_ABI } from "@/contracts";
-
-const VAULT_ADDRESS = ADDRESSES.VAULT;
+import { ERC20_ABI } from "@/contracts";
+import { useMarket } from "@/app/context/MarketContext";
+import type { TokenMeta } from "@/app/lib/marketConfig";
+import { useMarketEvmDecimals } from "@/app/hooks/useMarketEvmDecimals";
 
 // ═══════════════════════════════════════════════════════════════
 // Token Input Component
@@ -26,7 +27,7 @@ function TokenInput({
   onMaxClick,
 }: {
   label: string;
-  token: (typeof TOKENS)[keyof typeof TOKENS];
+  token: TokenMeta;
   amount: string;
   onAmountChange?: (value: string) => void;
   balance?: string;
@@ -83,6 +84,8 @@ function TokenInput({
 // ═══════════════════════════════════════════════════════════════
 export default function AddLiquidityCard() {
   const { address, isConnected } = useAccount();
+  const { market } = useMarket();
+  const VAULT_ADDRESS = market.vault as `0x${string}`;
 
   const [amount0, setAmount0] = useState("");
   const [amount1, setAmount1] = useState("");
@@ -91,27 +94,28 @@ export default function AddLiquidityCard() {
   const [txHash0, setTxHash0] = useState<`0x${string}` | undefined>();
   const [txHash1, setTxHash1] = useState<`0x${string}` | undefined>();
 
-  const token0 = TOKENS.PURR;
-  const token1 = TOKENS.USDC;
+  const token0 = market.tokens.BASE;
+  const token1 = market.tokens.USDC;
+  const { baseDecimals, usdcDecimals } = useMarketEvmDecimals();
 
   // Parse amounts
   const amount0Parsed = useMemo(() => {
     if (!amount0 || isNaN(Number(amount0))) return 0n;
     try {
-      return parseUnits(amount0, token0.decimals);
+      return parseUnits(amount0, baseDecimals);
     } catch {
       return 0n;
     }
-  }, [amount0, token0.decimals]);
+  }, [amount0, baseDecimals]);
 
   const amount1Parsed = useMemo(() => {
     if (!amount1 || isNaN(Number(amount1))) return 0n;
     try {
-      return parseUnits(amount1, token1.decimals);
+      return parseUnits(amount1, usdcDecimals);
     } catch {
       return 0n;
     }
-  }, [amount1, token1.decimals]);
+  }, [amount1, usdcDecimals]);
 
   // Read balances
   const { data: balance0Raw, refetch: refetchBalance0 } = useReadContract({
@@ -131,10 +135,10 @@ export default function AddLiquidityCard() {
   });
 
   const balance0 = balance0Raw
-    ? formatUnits(balance0Raw, token0.decimals)
+    ? formatUnits(balance0Raw, baseDecimals)
     : undefined;
   const balance1 = balance1Raw
-    ? formatUnits(balance1Raw, token1.decimals)
+    ? formatUnits(balance1Raw, usdcDecimals)
     : undefined;
 
   // Write
@@ -248,7 +252,7 @@ export default function AddLiquidityCard() {
 
         {/* Token 0 */}
         <TokenInput
-          label="PURR"
+          label={market.baseSymbol}
           token={token0}
           amount={amount0}
           onAmountChange={setAmount0}
@@ -296,7 +300,7 @@ export default function AddLiquidityCard() {
             {success0 && txHash0 && (
               <div className="p-3 rounded-xl bg-[var(--accent-muted)] border border-[var(--accent)] text-center">
                 <p className="text-[var(--accent)] text-sm">
-                  PURR transfer confirmed.{" "}
+                  {market.baseSymbol} transfer confirmed.{" "}
                   <a
                     href={`https://explorer.hyperliquid-testnet.xyz/tx/${txHash0}`}
                     target="_blank"

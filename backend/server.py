@@ -11,8 +11,9 @@ import os
 import json
 import time
 import asyncio
+import random
 import traceback
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -38,6 +39,14 @@ _PURR_TI = os.getenv("PURR_TOKEN_INDEX")
 DEBUG = os.getenv("DEBUG", "true").lower() == "true"
 ESCROW_POLL_INTERVAL_S = float(os.getenv("ESCROW_POLL_INTERVAL_S", "4.0"))
 SWAP_POLL_INTERVAL_S = float(os.getenv("SWAP_POLL_INTERVAL_S", "30.0"))
+# HTTP JSON-RPC timeout (seconds); public RPCs often fail with timeouts / rate limits under load
+RPC_HTTP_TIMEOUT_S = float(os.getenv("RPC_HTTP_TIMEOUT_S", "45"))
+# Retries for transient eth_call failures (e.g. "Request exceeds defined limit", 429)
+RPC_CALL_RETRIES = int(os.getenv("RPC_CALL_RETRIES", "5"))
+# Only scan the last N trade ids per poll (avoids hundreds of eth_calls → rate limits)
+MAX_ESCROW_TRADES_POLL = max(1, int(os.getenv("MAX_ESCROW_TRADES_POLL", "200")))
+# Optional delay between per-trade eth_calls when scanning many rows (seconds)
+ESCROW_INTER_CALL_SLEEP_S = float(os.getenv("ESCROW_INTER_CALL_SLEEP_S", "0"))
 # Optional backfill on first poll only (blocks behind head); 0 = start from current head only
 SWAP_LOG_LOOKBACK_BLOCKS = int(os.getenv("SWAP_LOG_LOOKBACK_BLOCKS", "0"))
 MAX_GET_LOGS_BLOCK_RANGE = int(os.getenv("MAX_GET_LOGS_BLOCK_RANGE", "2000"))
@@ -124,7 +133,12 @@ assert SWAP_TOPIC0.startswith("0x") and len(SWAP_TOPIC0) == 66, f"bad topic0: {S
 # -----------------------------
 # Web3
 # -----------------------------
-w3_http = Web3(Web3.HTTPProvider(EVM_RPC_HTTP_URL))
+w3_http = Web3(
+    Web3.HTTPProvider(
+        EVM_RPC_HTTP_URL,
+        request_kwargs={"timeout": RPC_HTTP_TIMEOUT_S},
+    )
+)
 
 vault_contract = w3_http.eth.contract(address=SOVEREIGN_VAULT_ADDRESS, abi=SOVEREIGN_VAULT_ABI)
 hedge_escrow = w3_http.eth.contract(address=HEDGE_ESCROW_ADDRESS, abi=HEDGE_ESCROW_ABI)
@@ -138,6 +152,15 @@ print(
     SWAP_POLL_INTERVAL_S,
     "lookback_blocks=",
     SWAP_LOG_LOOKBACK_BLOCKS,
+    flush=True,
+)
+print(
+    "[boot] rpc: timeout_s=",
+    RPC_HTTP_TIMEOUT_S,
+    "retries=",
+    RPC_CALL_RETRIES,
+    "max_escrow_trades_poll=",
+    MAX_ESCROW_TRADES_POLL,
     flush=True,
 )
 
@@ -235,6 +258,22 @@ async def get_default_core_vault() -> str:
     return Web3.to_checksum_address(v)
 
 
+def _retry_rpc(label: str, fn: Callable[[], Any], *, attempts: int = RPC_CALL_RETRIES) -> Any:
+    """Retry transient JSON-RPC eth_call failures (rate limits, timeouts)."""
+    last: Optional[BaseException] = None
+    for i in range(attempts):
+        try:
+            return fn()
+        except Exception as e:
+            last = e
+            if i == attempts - 1:
+                break
+            delay = 0.35 * (2**i) + random.random() * 0.12
+            time.sleep(delay)
+    assert last is not None
+    raise last
+
+
 def _call_spot_balance_precompile(user: str, token_index: int) -> Dict[str, int]:
     """spotBalance(address,uint64) -> (uint64 total, uint64 hold, uint64 entryNtl)"""
     data = w3_http.codec.encode(["address", "uint64"], [user, token_index])
@@ -247,16 +286,35 @@ async def poll_escrow_once() -> None:
     global escrow_claimable
 
     def _read():
-        nxt = hedge_escrow.functions.nextTradeId().call()
+        nxt = int(
+            _retry_rpc(
+                "nextTradeId",
+                lambda: hedge_escrow.functions.nextTradeId().call(),
+            )
+        )
         out: Dict[int, Dict[str, Any]] = {}
-        nxt = int(nxt)
-        for tid in range(1, nxt):
+        if nxt <= 1:
+            return out
+        # Highest trade id is nxt - 1; only scan the last MAX_ESCROW_TRADES_POLL ids (RPC budget)
+        hi = nxt - 1
+        lo = max(1, hi - MAX_ESCROW_TRADES_POLL + 1)
+        for tid in range(lo, hi + 1):
+            if ESCROW_INTER_CALL_SLEEP_S > 0 and tid > lo:
+                time.sleep(ESCROW_INTER_CALL_SLEEP_S)
             try:
-                t = hedge_escrow.functions.trades(tid).call()
+                t = _retry_rpc(
+                    f"trades({tid})",
+                    lambda i=tid: hedge_escrow.functions.trades(i).call(),
+                )
                 user, is_buy, limit_px, sz, cloid, purr_bef, usdc_bef, claimed = t
                 can_claim = False
                 if not claimed and is_buy:
-                    can_claim = hedge_escrow.functions.canClaimBuy(tid).call()
+                    can_claim = bool(
+                        _retry_rpc(
+                            f"canClaimBuy({tid})",
+                            lambda i=tid: hedge_escrow.functions.canClaimBuy(i).call(),
+                        )
+                    )
                 out[tid] = {
                     "id": tid,
                     "user": user,
@@ -296,13 +354,41 @@ async def poll_escrow_once() -> None:
         )
 
 
+_escrow_crash_last_log_s = 0.0
+
+
 async def escrow_poller_loop() -> None:
+    global _escrow_crash_last_log_s
+    fail_streak = 0
     while True:
+        sleep_s = ESCROW_POLL_INTERVAL_S
         try:
             await poll_escrow_once()
-        except Exception:
-            await debug_emit("escrow_poll_crash", {"trace": traceback.format_exc()})
-        await asyncio.sleep(ESCROW_POLL_INTERVAL_S)
+            fail_streak = 0
+        except Exception as e:
+            fail_streak += 1
+            # Back off when RPC is rate-limiting; avoid spamming multi-KB traces every few seconds
+            sleep_s = min(120.0, ESCROW_POLL_INTERVAL_S * (2 ** min(fail_streak, 5)))
+            now = time.time()
+            short = f"{type(e).__name__}: {e}"
+            if now - _escrow_crash_last_log_s >= 60.0 or fail_streak == 1:
+                _escrow_crash_last_log_s = now
+                print(
+                    f"[escrow_poller] error ({short}) fail_streak={fail_streak} "
+                    f"next_sleep_s={sleep_s:.1f}",
+                    flush=True,
+                )
+                await debug_emit(
+                    "escrow_poll_crash",
+                    {
+                        "error": short,
+                        "fail_streak": fail_streak,
+                        "trace": traceback.format_exc()[:4000],
+                    },
+                )
+            else:
+                print(f"[escrow_poller] error ({short}) (suppressed detail)", flush=True)
+        await asyncio.sleep(sleep_s)
 
 
 def _log_sort_key(log: Any) -> tuple:
@@ -536,4 +622,4 @@ async def ws_endpoint(ws: WebSocket):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")), log_level="debug")
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "3000")), log_level="debug")

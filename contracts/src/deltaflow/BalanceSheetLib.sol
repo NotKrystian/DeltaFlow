@@ -48,6 +48,9 @@ library BalanceSheetLib {
             PrecompileLib.Position memory p = PrecompileLib.position(account, uint16(perpIndex));
             s.perpSzi = int256(int64(p.szi)) + int256(pendingHedgeBuySz) - int256(pendingHedgeSellSz);
             s.markPxNormalized = PrecompileLib.normalizedMarkPx(perpIndex);
+        } else {
+            // Queue-only: IOC not yet sent still affects effective hedge / net delta.
+            s.perpSzi = int256(pendingHedgeBuySz) - int256(pendingHedgeSellSz);
         }
 
         s.spotPxNormalized = PrecompileLib.normalizedSpotPx(spotIndex);

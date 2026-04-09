@@ -17,6 +17,11 @@ via_ir = true
 bytecode_hash = "none"
 cbor_metadata = false
 
+# Hyperliquid testnet blocks report gasLimit ≈ 3_000_000; deploy txs must stay under that.
+# Lower `optimizer_runs` can shrink initcode slightly (this repo still needs `via_ir` = stack depth).
+[profile.hl_testnet]
+optimizer_runs = 1
+
 # Exclude certora + mocks that cause missing file issues
 ignored_error_codes = []
 fs_permissions = [{ access = "read", path = "./" }]
@@ -27,5 +32,4 @@ skip = [
   "contracts/lib/**/mocks/**",
   "lib/**/certora/**",
   "lib/**/mocks/**",
-  "contracts/test/SovereignALM.t.sol"
 ]

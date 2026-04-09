@@ -165,6 +165,10 @@ abstract contract AmmDeployBase is Script {
         fp.exhaustQuadWad = vm.envOr("DF_EXHAUST_QUAD_WAD", uint256(80e18));
         fp.safetyBaseBps = vm.envOr("DF_SAFETY_BASE_BPS", uint256(2));
         fp.delayStressed = vm.envOr("DF_DELAY_STRESSED", false);
+        fp.perpDepthWad = vm.envOr("DF_PERP_DEPTH_WAD", uint256(1_500_000 ether));
+        fp.impactCoeff = vm.envOr("DF_IMPACT_COEFF", uint256(12));
+        fp.hMaxSz = vm.envOr("DF_H_MAX_SZ", uint256(200_000));
+        fp.poolNavWad = vm.envOr("DF_POOL_NAV_WAD", uint256(0));
     }
 
     function _deployPool(Params memory p, address vaultAddr) internal returns (SovereignPool pool) {
@@ -319,12 +323,13 @@ abstract contract AmmDeployBase is Script {
             }
         }
 
-        // HedgeEscrow wiring uses HyperEVM precompiles (registry + token info). `forge script` without
-        // `--fork-url` simulates on a plain anvil that lacks those precompiles and reverts on 0x…080C.
-        // Always deploy with `--fork-url https://rpc.hyperliquid-testnet.xyz/evm` (and a recent
-        // `--fork-block-number` if the RPC rejects the default), see `scripts/deploy_all_testnet.sh`.
+        // HedgeEscrow args: Core token index comes from the on-chain registry via `getTokenIndex` (works
+        // under forge fork). Spot *universe* index must match `PrecompileLib.getSpotIndex` on-chain, but
+        // that path calls token info precompile `0x…080C`, which Foundry’s fork does not execute — calls
+        // revert with “non-contract address”. Use the same value from env (`SPOT_INDEX_PURR` / `SPOT_INDEX_WETH`
+        // → `p.spotIndexPURR`) that you verified via spotMeta / ReadSpotIndex.
         uint64 baseTi = PrecompileLib.getTokenIndex(p.purr);
-        uint64 spotIdx = PrecompileLib.getSpotIndex(p.purr);
+        uint64 spotIdx = p.spotIndexPURR;
         uint32 spotAsset = uint32(uint256(10000) + uint256(spotIdx));
         HedgeEscrow he = new HedgeEscrow(p.usdc, p.purr, spotAsset, baseTi);
         console2.log("HedgeEscrow:", address(he));

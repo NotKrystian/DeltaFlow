@@ -8,7 +8,8 @@ import {
   useWaitForTransactionReceipt,
 } from "wagmi";
 import { parseUnits, maxUint256 } from "viem";
-import { ADDRESSES, ERC20_ABI, HEDGE_ESCROW_ABI } from "@/contracts";
+import { ERC20_ABI, HEDGE_ESCROW_ABI } from "@/contracts";
+import { useMarket } from "@/app/context/MarketContext";
 
 const HL_INFO =
   typeof process !== "undefined"
@@ -21,14 +22,14 @@ type SpotMetaUniverse = {
   tokens: [number, number];
 };
 
-type TokenMeta = { name: string; szDecimals: number; weiDecimals: number };
+type HlTokenRow = { name: string; szDecimals: number; weiDecimals: number };
 
 type SpotMeta = {
   universe?: SpotMetaUniverse[];
-  tokens?: TokenMeta[];
+  tokens?: HlTokenRow[];
 };
 
-async function fetchPurrSpotSzDecimals(): Promise<number | null> {
+async function fetchSpotSzDecimals(baseSymbol: string): Promise<number | null> {
   try {
     const r = await fetch(HL_INFO, {
       method: "POST",
@@ -36,7 +37,12 @@ async function fetchPurrSpotSzDecimals(): Promise<number | null> {
       body: JSON.stringify({ type: "spotMeta" }),
     });
     const j: SpotMeta = await r.json();
-    const pair = j.universe?.find((u) => u.name === "PURR/USDC" || u.name.startsWith("PURR/"));
+    const pair = j.universe?.find(
+      (u) =>
+        u.name === `${baseSymbol}/USDC` ||
+        u.name === `USDC/${baseSymbol}` ||
+        u.name.startsWith(`${baseSymbol}/`)
+    );
     if (!pair || !j.tokens?.length) return null;
     const baseIdx = pair.tokens[0];
     const dec = j.tokens[baseIdx]?.szDecimals;
@@ -48,21 +54,22 @@ async function fetchPurrSpotSzDecimals(): Promise<number | null> {
 
 export default function HedgeOpenCard() {
   const { address, isConnected } = useAccount();
+  const { market } = useMarket();
   const [usdcIn, setUsdcIn] = useState("");
-  const [limitPrice, setLimitPrice] = useState(""); // USDC per 1 PURR
-  const [sizePurr, setSizePurr] = useState("");
+  const [limitPrice, setLimitPrice] = useState("");
+  const [sizeBase, setSizeBase] = useState("");
   const [tif, setTif] = useState<1 | 2 | 3>(3); // Ioc default
   const [cloidStr, setCloidStr] = useState("");
   const [szDecimalsHint, setSzDecimalsHint] = useState<number | null>(null);
 
   const escrowConfigured = useMemo(
-    () => ADDRESSES.HEDGE_ESCROW !== "0x0000000000000000000000000000000000000000",
-    []
+    () => market.hedgeEscrow !== "0x0000000000000000000000000000000000000000",
+    [market.hedgeEscrow]
   );
 
   useEffect(() => {
-    fetchPurrSpotSzDecimals().then(setSzDecimalsHint);
-  }, []);
+    fetchSpotSzDecimals(market.baseSymbol).then(setSzDecimalsHint);
+  }, [market.baseSymbol]);
 
   const usdcAmountWei = useMemo(() => {
     try {
@@ -74,12 +81,12 @@ export default function HedgeOpenCard() {
   }, [usdcIn]);
 
   const { data: allowance, refetch: refetchAllowance } = useReadContract({
-    address: ADDRESSES.USDC,
+    address: market.usdc,
     abi: ERC20_ABI,
     functionName: "allowance",
     args:
       address && escrowConfigured
-        ? [address, ADDRESSES.HEDGE_ESCROW]
+        ? [address, market.hedgeEscrow]
         : undefined,
     query: {
       enabled: Boolean(address && escrowConfigured),
@@ -107,10 +114,10 @@ export default function HedgeOpenCard() {
   const approve = async () => {
     if (!escrowConfigured || usdcAmountWei === 0n) return;
     writeContract({
-      address: ADDRESSES.USDC,
+      address: market.usdc,
       abi: ERC20_ABI,
       functionName: "approve",
-      args: [ADDRESSES.HEDGE_ESCROW, maxUint256],
+      args: [market.hedgeEscrow, maxUint256],
     });
   };
 
@@ -118,7 +125,7 @@ export default function HedgeOpenCard() {
     if (!escrowConfigured || usdcAmountWei === 0n) return;
     if (needsApprove) return;
     const limitPx1e8 = parseUnits(limitPrice || "0", 8);
-    const sz1e8 = parseUnits(sizePurr || "0", 8);
+    const sz1e8 = parseUnits(sizeBase || "0", 8);
     if (limitPx1e8 === 0n || sz1e8 === 0n) return;
 
     let cloid = 0n;
@@ -132,7 +139,7 @@ export default function HedgeOpenCard() {
     if (cloid > (1n << 128n) - 1n) return;
 
     writeContract({
-      address: ADDRESSES.HEDGE_ESCROW,
+      address: market.hedgeEscrow,
       abi: HEDGE_ESCROW_ABI,
       functionName: "openBuyPurrWithUsdc",
       args: [usdcAmountWei, limitPx1e8, sz1e8, tif, cloid],
@@ -152,13 +159,14 @@ export default function HedgeOpenCard() {
     <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6">
       <h2 className="text-lg font-semibold text-[var(--foreground)]">Open hedge (CoreWriter)</h2>
       <p className="text-sm text-[var(--text-muted)]">
-        Bridges USDC to HyperCore spot and places a <strong>buy PURR</strong> limit order via the system contract{" "}
+        Bridges USDC to HyperCore spot and places a <strong>buy {market.baseSymbol}</strong> limit order via the system contract{" "}
         <code className="text-xs">0x3333…3333</code>. Limit price and size use HL scaling (1e8 × human). Spot order
         asset id in the contract is <code className="text-xs">10000 + spotIndex</code> (not the perp universe id).
       </p>
       {szDecimalsHint !== null && (
         <p className="text-xs text-[var(--text-muted)]">
-          spotMeta PURR <code className="text-xs">szDecimals={szDecimalsHint}</code> (hint for manual size checks)
+          spotMeta {market.baseSymbol}{" "}
+          <code className="text-xs">szDecimals={szDecimalsHint}</code> (hint for manual size checks)
         </p>
       )}
 
@@ -174,7 +182,7 @@ export default function HedgeOpenCard() {
           />
         </label>
         <label className="block text-sm">
-          <span className="text-[var(--text-muted)]">Limit price (USDC per 1 PURR)</span>
+          <span className="text-[var(--text-muted)]">Limit price (USDC per 1 {market.baseSymbol})</span>
           <input
             type="text"
             value={limitPrice}
@@ -184,11 +192,11 @@ export default function HedgeOpenCard() {
           />
         </label>
         <label className="block text-sm">
-          <span className="text-[var(--text-muted)]">Size (PURR, human — encoded × 1e8)</span>
+          <span className="text-[var(--text-muted)]">Size ({market.baseSymbol}, human — encoded × 1e8)</span>
           <input
             type="text"
-            value={sizePurr}
-            onChange={(e) => setSizePurr(e.target.value)}
+            value={sizeBase}
+            onChange={(e) => setSizeBase(e.target.value)}
             placeholder="e.g. 10"
             className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-[var(--foreground)]"
           />

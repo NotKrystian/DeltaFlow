@@ -63,6 +63,10 @@ forge script contracts/script/ReadSpotIndex.s.sol:ReadSpotIndex \
 
 Then copy **`SPOT_INDEX_PURR`** (and **`SPOT_INDEX_WETH`** for WETH) into your root `.env` for **`forge script DeployAll`**.
 
+## ALM spot price getter
+
+Current **`SovereignALM`** deployments use **`getSpotPriceUsdcPerBase()`** — **USDC per 1 base** in USDC raw units (same math as before). Off-chain callers and ABIs that still reference **`getSpotPriceUSDCperPURR`** must be updated when you point at a new contract.
+
 ## Related
 
 - [Current implementation — per-swap perp hedge & queue](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue)

@@ -4,21 +4,25 @@ import { useCallback, useMemo } from "react";
 import { useAccount, useReadContract, useReadContracts } from "wagmi";
 import { formatUnits } from "viem";
 import {
-  ADDRESSES,
   ERC20_ABI,
   SOVEREIGN_VAULT_ABI,
   SOVEREIGN_ALM_ABI,
   FEE_SURPLUS_ABI,
-  TOKENS,
 } from "@/contracts";
+import { useMarket } from "@/app/context/MarketContext";
+import { useMarketEvmDecimals } from "./useMarketEvmDecimals";
 
 const WAD = 10n ** 18n;
 
 /** LP token (DFLP) lives on the SovereignVault contract address. */
 export function useVaultLp() {
   const { address } = useAccount();
-  const vault = ADDRESSES.VAULT;
-  const feeSurplus = ADDRESSES.FEE_SURPLUS;
+  const { market } = useMarket();
+  const vault = market.vault;
+  const feeSurplus = market.feeSurplus;
+  const base = market.tokens.BASE;
+  const usdc = market.tokens.USDC;
+  const { baseDecimals, usdcDecimals } = useMarketEvmDecimals();
   const hasFeeSurplus =
     feeSurplus !== "0x0000000000000000000000000000000000000000";
 
@@ -42,9 +46,9 @@ export function useVaultLp() {
           args: address ? [address] : undefined,
         },
         {
-          address: ADDRESSES.ALM,
+          address: market.alm,
           abi: SOVEREIGN_ALM_ABI,
-          functionName: "getSpotPriceUSDCperPURR",
+          functionName: "getSpotPriceUsdcPerBase",
         },
         {
           address: vault,
@@ -79,7 +83,7 @@ export function useVaultLp() {
 
   const reserveTuple = data?.[0]?.result as readonly [bigint, bigint] | undefined;
   const reserveUsdcOnly = reserveTuple?.[0];
-  const reservePurr = reserveTuple?.[1];
+  const reserveBase = reserveTuple?.[1];
 
   const totalSupply = data?.[1]?.result as bigint | undefined;
   const userShares = data?.[2]?.result as bigint | undefined;
@@ -94,7 +98,7 @@ export function useVaultLp() {
     useMemo(() => {
       if (
         reserveUsdcOnly === undefined ||
-        reservePurr === undefined ||
+        reserveBase === undefined ||
         totalSupply === undefined ||
         totalSupply === 0n ||
         spotPriceRaw === undefined
@@ -108,10 +112,10 @@ export function useVaultLp() {
         };
       }
 
-      const purrDec = BigInt(TOKENS.PURR.decimals);
-      const scale = 10n ** purrDec;
-      const purrPart = (reservePurr * spotPriceRaw) / scale;
-      const poolValue = reserveUsdcOnly + purrPart;
+      const baseDec = BigInt(baseDecimals);
+      const scale = 10n ** baseDec;
+      const basePart = (reserveBase * spotPriceRaw) / scale;
+      const poolValue = reserveUsdcOnly + basePart;
       const sharePrice = (poolValue * WAD) / totalSupply;
 
       let userVal: bigint | undefined;
@@ -135,18 +139,20 @@ export function useVaultLp() {
       };
     }, [
       reserveUsdcOnly,
-      reservePurr,
+      reserveBase,
       totalSupply,
       spotPriceRaw,
       userShares,
       surplusUsdc,
+      baseDecimals,
     ]);
 
   return {
     vault,
     lpSymbol,
     reserveUsdc: reserveUsdcOnly,
-    reservePurr,
+    reservePurr: reserveBase,
+    reserveBase,
     totalSupply,
     userShares,
     spotPriceRaw,
@@ -157,10 +163,13 @@ export function useVaultLp() {
     userSharePct,
     userSurplusAttribution,
     hasFeeSurplus,
+    baseSymbol: market.baseSymbol,
     formatUsdc: (v: bigint | undefined) =>
-      v === undefined ? "—" : formatUnits(v, TOKENS.USDC.decimals),
+      v === undefined ? "—" : formatUnits(v, usdcDecimals),
     formatPurr: (v: bigint | undefined) =>
-      v === undefined ? "—" : formatUnits(v, TOKENS.PURR.decimals),
+      v === undefined ? "—" : formatUnits(v, baseDecimals),
+    formatBase: (v: bigint | undefined) =>
+      v === undefined ? "—" : formatUnits(v, baseDecimals),
     lpDecimals,
     formatShares: (v: bigint | undefined) =>
       v === undefined ? "—" : formatUnits(v, lpDecimals),

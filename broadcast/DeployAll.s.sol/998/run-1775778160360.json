@@ -1,7 +1,7 @@
 {
   "transactions": [
     {
-      "hash": "0xe9a6c813269e2cacaa527c0b93a637bd587a5571c9ba88ffc66aa28c34316e7f",
+      "hash": null,
       "transactionType": "CREATE",
       "contractName": "SovereignVault",
       "contractAddress": "0x6952f0d34d8fa3b4a6c248a5daf0e2e0fe2359a9",
@@ -22,7 +22,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x72067721e2722053bfefca687226698de5e7a040a5767d467cb787b57aa17e5f",
+      "hash": null,
       "transactionType": "CREATE",
       "contractName": "SovereignPool",
       "contractAddress": "0x139ecdedc34c8b8d00d95027290d6a933b138b46",
@@ -42,7 +42,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x92023072b5f6541b71c6cc6e6e70ee734fb0764e4003c855e4376dfd0d5de3ae",
+      "hash": null,
       "transactionType": "CALL",
       "contractName": "SovereignVault",
       "contractAddress": "0x6952f0d34d8fa3b4a6c248a5daf0e2e0fe2359a9",
@@ -64,7 +64,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x8b9cb54e9e9f9a23291d2297d21da32f91ba1b09494cd795c0d584709a1c1b40",
+      "hash": null,
       "transactionType": "CREATE",
       "contractName": "SovereignALM",
       "contractAddress": "0x66991df57c0e11f99e406a4f2400dcacf93c3a84",
@@ -90,7 +90,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x7c48f231e4fe3ac08ac0c1781a549fa45e258f8f131d579f5509cbe8d8a78838",
+      "hash": null,
       "transactionType": "CREATE",
       "contractName": "FeeSurplus",
       "contractAddress": "0x3434ecd32b7abe27463cd9597a84c6d82744ac4a",
@@ -111,7 +111,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x30006b77523c806559de37dedd46ef6f2d9a19d2b1bc1213fe57cb77bfbc0c7e",
+      "hash": null,
       "transactionType": "CREATE",
       "contractName": "DeltaFlowRiskEngine",
       "contractAddress": "0x3888c42089054f32bad72f81f9b43a03b91ee745",
@@ -134,7 +134,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0xe7b53ac339ee6dc2d4f7f854de9714ea7846f81e73fc2875b629168f1ec7ebf3",
+      "hash": null,
       "transactionType": "CREATE",
       "contractName": "DeltaFlowCompositeFeeModule",
       "contractAddress": "0xbe72bdcc6983007fbfc4463f3575635a54158953",
@@ -167,7 +167,7 @@
       "isFixedGasLimit": false
     },
     {
-      "hash": "0x42295b47843b8f4eb3e9ca4af13c89815feb97a8fff3d5512f276a89628aaec2",
+      "hash": null,
       "transactionType": "CALL",
       "contractName": "FeeSurplus",
       "contractAddress": "0x3434ecd32b7abe27463cd9597a84c6d82744ac4a",
@@ -675,18 +675,9 @@
   ],
   "receipts": [],
   "libraries": [],
-  "pending": [
-    "0xe9a6c813269e2cacaa527c0b93a637bd587a5571c9ba88ffc66aa28c34316e7f",
-    "0x72067721e2722053bfefca687226698de5e7a040a5767d467cb787b57aa17e5f",
-    "0x92023072b5f6541b71c6cc6e6e70ee734fb0764e4003c855e4376dfd0d5de3ae",
-    "0x8b9cb54e9e9f9a23291d2297d21da32f91ba1b09494cd795c0d584709a1c1b40",
-    "0x7c48f231e4fe3ac08ac0c1781a549fa45e258f8f131d579f5509cbe8d8a78838",
-    "0x30006b77523c806559de37dedd46ef6f2d9a19d2b1bc1213fe57cb77bfbc0c7e",
-    "0xe7b53ac339ee6dc2d4f7f854de9714ea7846f81e73fc2875b629168f1ec7ebf3",
-    "0x42295b47843b8f4eb3e9ca4af13c89815feb97a8fff3d5512f276a89628aaec2"
-  ],
+  "pending": [],
   "returns": {},
-  "timestamp": 1775778201482,
+  "timestamp": 1775778160360,
   "chain": 998,
   "commit": "23f449b"
 }

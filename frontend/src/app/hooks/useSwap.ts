@@ -2,16 +2,17 @@
 
 import { useWriteContract, useWaitForTransactionReceipt } from "wagmi";
 import { parseUnits } from "viem";
-import { CONTRACTS, POOL_ABI, ERC20_ABI } from "../lib/contracts";
+import { POOL_ABI, ERC20_ABI } from "../lib/contracts";
+import { useMarket } from "@/app/context/MarketContext";
+import { useMarketEvmDecimals } from "./useMarketEvmDecimals";
 
 export interface SwapParams {
-  isZeroToOne: boolean; // true = PURR->USDC, false = USDC->PURR
+  isZeroToOne: boolean;
   amountIn: string;
   amountOutMin: string;
   recipient: `0x${string}`;
 }
 
-// Hook for approving tokens
 export function useApprove() {
   const {
     writeContract,
@@ -49,8 +50,9 @@ export function useApprove() {
   };
 }
 
-// Hook for executing swaps
 export function useSwap() {
+  const { market } = useMarket();
+  const { baseDecimals, usdcDecimals } = useMarketEvmDecimals();
   const {
     writeContract,
     data: hash,
@@ -65,16 +67,16 @@ export function useSwap() {
 
   const swap = async (params: SwapParams) => {
     const { isZeroToOne, amountIn, amountOutMin, recipient } = params;
+    const base = market.tokens.BASE;
+    const usdc = market.tokens.USDC;
 
-    // Parse amounts based on direction
-    const tokenInDecimals = isZeroToOne ? 5 : 6; // PURR=5, USDC=6
-    const tokenOutDecimals = isZeroToOne ? 6 : 5;
-    const tokenOut = isZeroToOne ? CONTRACTS.USDC : CONTRACTS.PURR;
+    const tokenInDecimals = isZeroToOne ? baseDecimals : usdcDecimals;
+    const tokenOutDecimals = isZeroToOne ? usdcDecimals : baseDecimals;
+    const tokenOut = isZeroToOne ? usdc.address : base.address;
 
     const amountInParsed = parseUnits(amountIn, tokenInDecimals);
     const amountOutMinParsed = parseUnits(amountOutMin || "0", tokenOutDecimals);
 
-    // Deadline: 20 minutes from now
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200);
 
     const swapParams = {
@@ -94,7 +96,7 @@ export function useSwap() {
     };
 
     writeContract({
-      address: CONTRACTS.POOL,
+      address: market.pool,
       abi: POOL_ABI,
       functionName: "swap",
       args: [swapParams],
@@ -112,12 +114,12 @@ export function useSwap() {
   };
 }
 
-// Calculate expected output amount
 export function calculateExpectedOutput(
   amountIn: string,
   spotPrice: number,
   isZeroToOne: boolean,
-  feeBips: number = 30
+  feeBips: number = 30,
+  baseDecimals: number = 18
 ): string {
   if (!amountIn || isNaN(Number(amountIn)) || Number(amountIn) <= 0) {
     return "0";
@@ -127,14 +129,9 @@ export function calculateExpectedOutput(
   const feeMultiplier = 1 - feeBips / 10000;
 
   if (isZeroToOne) {
-    // PURR -> USDC
-    // amountOut = amountIn * price * (1 - fee)
     const output = amount * spotPrice * feeMultiplier;
     return output.toFixed(6);
-  } else {
-    // USDC -> PURR
-    // amountOut = amountIn / price * (1 - fee)
-    const output = (amount / spotPrice) * feeMultiplier;
-    return output.toFixed(5);
   }
+  const output = (amount / spotPrice) * feeMultiplier;
+  return output.toFixed(Math.min(baseDecimals, 8));
 }

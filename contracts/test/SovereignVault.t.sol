@@ -55,7 +55,7 @@ contract MockALM {
         price = _price;
     }
 
-    function getSpotPriceUSDCperPURR() external view returns (uint256) {
+    function getSpotPriceUsdcPerBase() external view returns (uint256) {
         return price;
     }
 }

@@ -8,6 +8,8 @@ Usage:
   python3 scripts/sync_env_from_broadcast.py
   python3 scripts/sync_env_from_broadcast.py --dry-run
   CHAIN_ID=998 python3 scripts/sync_env_from_broadcast.py --rpc-url https://rpc.hyperliquid-testnet.xyz/evm
+  # After two-phase deploy (stack1 + stack2), merge broadcast JSONs:
+  #   python3 scripts/sync_env_from_broadcast.py --broadcast-json run-after-stack1.json --broadcast-json run-latest.json
 """
 
 from __future__ import annotations
@@ -140,8 +142,10 @@ def main() -> int:
     ap.add_argument(
         "--broadcast-json",
         type=Path,
+        action="append",
+        dest="broadcast_jsons",
         default=None,
-        help="Path to run-latest.json (default: broadcast/DeployAll.s.sol/<chain>/run-latest.json)",
+        help="Path to broadcast JSON (repeat for merge: stack1 run + stack2 run). Default: single run-latest.json",
     )
     ap.add_argument("--chain-id", type=int, default=int(os.environ.get("CHAIN_ID", "998")))
     ap.add_argument("--rpc-url", default=os.environ.get("RPC_URL", os.environ.get("TESTNET_RPC_URL")))
@@ -150,17 +154,21 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    bj = args.broadcast_json
-    if bj is None:
-        bj = ROOT / "broadcast" / "DeployAll.s.sol" / str(args.chain_id) / "run-latest.json"
+    bj_list = args.broadcast_jsons
+    if not bj_list:
+        bj_list = [ROOT / "broadcast" / "DeployAll.s.sol" / str(args.chain_id) / "run-latest.json"]
 
-    if not bj.is_file():
-        print(f"Error: broadcast file not found: {bj}", file=sys.stderr)
-        print("Deploy first with: forge script contracts/script/DeployAll.s.sol:DeployAll --broadcast", file=sys.stderr)
-        return 1
+    for bj in bj_list:
+        if not bj.is_file():
+            print(f"Error: broadcast file not found: {bj}", file=sys.stderr)
+            print("Deploy first with: forge script contracts/script/DeployAll.s.sol:DeployAll --broadcast", file=sys.stderr)
+            return 1
 
-    data = json.loads(bj.read_text())
-    txs = data.get("transactions") or []
+    merged_txs: list[dict[str, Any]] = []
+    for bj in bj_list:
+        data = json.loads(bj.read_text())
+        merged_txs.extend(data.get("transactions") or [])
+    txs = merged_txs
     stacks = _parse_stacks(txs)
     if not stacks:
         print("Error: no SovereignVault deployments found in broadcast (empty or wrong script?)", file=sys.stderr)
@@ -221,7 +229,12 @@ def main() -> int:
             fe["NEXT_PUBLIC_HEDGE_ESCROW_WETH"] = he_w
 
     if not args.dry_run:
-        print(f"Using broadcast: {bj}")
+        if len(bj_list) == 1:
+            print(f"Using broadcast: {bj_list[0]}")
+        else:
+            print("Using merged broadcasts:")
+            for p in bj_list:
+                print(f"  {p}")
         print(f"Stacks parsed: {len(stacks)}")
 
     _merge_env(args.frontend_env, fe, args.dry_run)

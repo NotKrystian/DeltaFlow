@@ -10,14 +10,14 @@ import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {CoreWriterLib} from "@hyper-evm-lib/src/CoreWriterLib.sol";
-import {HLConversions} from "@hyper-evm-lib/src/CoreWriterLib.sol";
+import {HLConversions} from "@hyper-evm-lib/src/common/HLConversions.sol";
 import {HLConstants} from "@hyper-evm-lib/src/common/HLConstants.sol";
 import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 
 /// @dev Minimal interface so the vault can read the spot price from the ALM
 ///      without importing the full ALM contract.
 interface ISpotPricer {
-    function getSpotPriceUSDCperPURR() external view returns (uint256);
+    function getSpotPriceUsdcPerBase() external view returns (uint256);
 }
 
 contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
@@ -57,6 +57,15 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     error LP__InsufficientPurrOut(uint256 got, uint256 min);
     error LP__InsufficientEvmUsdc(uint256 available, uint256 needed);
     error HedgeBatchTooLarge();
+    /// @dev Vault EVM USDC lower than USDC notionally required to fund perp margin for this hedge `sz`.
+    error InsufficientUSDCForHedge(uint256 required, uint256 available);
+    /// @dev `normalizedMarkPx(perpIx) == 0` — cannot size USDC margin for the IOC.
+    error HedgeMarkPxZero();
+    /// @dev Bridged USDC rounds to zero `transferUsdClass` units — increase trade size or USDC amount.
+    error HedgePerpNtlDust();
+    error PerpIndexTooLarge();
+    error BootstrapAmountTooSmall(uint256 minAmount, uint256 got);
+    error ZeroAmount();
 
     event LiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 purrAmount, uint256 shares);
     event LiquidityRemoved(address indexed provider, uint256 usdcOut, uint256 purrOut, uint256 shares);
@@ -69,6 +78,14 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     event HedgeSliceQueued(bool indexed buyPerp, uint64 sz, uint256 pendingBuySz, uint256 pendingSellSz);
     /// @notice Emitted when a batch IOC is sent (one or many swaps combined).
     event HedgeBatchExecuted(uint32 indexed perpAsset, bool indexed buyPerp, uint256 totalSz);
+    event HypeBridgedToCore(uint256 weiAmount);
+
+    /// @notice Last perp hedge leg from `_netHedgePosition` (mirrors memo unwind vs open; fee module uses balance-sheet `unwind` blend separately).
+    ///         0=None, 1=OpenOnly, 2=UnwindOnly (reduce-only), 3=UnwindThenOpen.
+    uint8 public lastHedgeLeg;
+
+    /// @dev Minimum USDC (6-decimal wei) for `bootstrapHyperCoreAccount` — HyperCore account creation / first spot funding.
+    uint256 public constant MIN_CORE_BOOTSTRAP_USDC = 1_000_000;
 
     mapping(address => uint256) public allocatedToCoreVault;
 
@@ -176,19 +193,133 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         return dyn > floor ? dyn : floor;
     }
 
-    function _placePerpIoc(uint32 perpIx, bool isBuy, uint64 sz) internal {
+    /// @notice USDC notionally (~1e6 USD units) required to margin an IOC of size `sz`, matching `_hedgeSzThreshold` math.
+    function _notionalUsdcEvmForSz(uint32 perpIx, uint64 sz) internal view returns (uint256) {
+        if (sz == 0) return 0;
+        uint256 px = PrecompileLib.normalizedMarkPx(perpIx);
+        if (px == 0) revert HedgeMarkPxZero();
+        uint8 sd = PrecompileLib.perpAssetInfo(perpIx).szDecimals;
+        uint256 factor = 10 ** uint256(sd);
+        return Math.mulDiv(uint256(sz), px, factor, Math.Rounding.Ceil);
+    }
+
+    /// @dev Bridge vault USDC to HyperCore spot, move it to perp via `transferUsdClass`, then the IOC can consume margin in the same tx.
+    function _bridgeUsdcSpotToPerpForHedge(uint256 usdcEvmAmount) internal {
+        if (usdcEvmAmount == 0) return;
+
+        uint256 bal = IERC20(usdc).balanceOf(address(this));
+        if (bal < usdcEvmAmount) revert InsufficientUSDCForHedge(usdcEvmAmount, bal);
+
+        CoreWriterLib.bridgeToCore(usdc, usdcEvmAmount);
+
+        uint64 coreWei = HLConversions.evmToWei(usdc, usdcEvmAmount);
+        uint64 perpNtl = HLConversions.weiToPerp(coreWei);
+        if (perpNtl == 0) revert HedgePerpNtlDust();
+
+        CoreWriterLib.transferUsdClass(perpNtl, true);
+    }
+
+    /// @param reduceOnly When true, closing against an existing perp position — skip fresh USDC bridge; margin comes from Core.
+    function _placePerpIoc(uint32 perpIx, bool isBuy, uint64 sz, bool reduceOnly) internal {
+        if (sz == 0) return;
+
+        if (!reduceOnly) {
+            uint256 usdcNeed = _notionalUsdcEvmForSz(perpIx, sz);
+            _bridgeUsdcSpotToPerpForHedge(usdcNeed);
+        }
+
         uint64 limitPx = isBuy ? type(uint64).max : 0;
-        uint128 cloid = uint128(uint256(keccak256(abi.encodePacked(block.number, perpIx, isBuy, sz, address(this)))));
-        CoreWriterLib.placeLimitOrder(
-            perpIx, isBuy, limitPx, sz, false, HLConstants.LIMIT_ORDER_TIF_IOC, cloid
+        uint128 cloid = uint128(
+            uint256(
+                keccak256(
+                    abi.encodePacked(block.number, perpIx, isBuy, sz, reduceOnly, address(this), gasleft())
+                )
+            )
         );
+        CoreWriterLib.placeLimitOrder(
+            perpIx, isBuy, limitPx, sz, reduceOnly, HLConstants.LIMIT_ORDER_TIF_IOC, cloid
+        );
+    }
+
+    /// @notice Applies incremental hedge `sz` against live Core perp position: closes the opposing leg with reduce-only IOCs first, then opens the remainder.
+    function _netHedgePosition(uint32 perpIx, bool isBuy, uint64 sz) internal {
+        if (sz == 0) return;
+        if (perpIx > type(uint16).max) revert PerpIndexTooLarge();
+        int64 pos = PrecompileLib.position(address(this), uint16(perpIx)).szi;
+
+        uint8 leg;
+
+        if (isBuy) {
+            if (pos >= 0) {
+                _placePerpIoc(perpIx, true, sz, false);
+                leg = 1;
+            } else {
+                uint64 shortAbs = uint64(uint256(-int256(pos)));
+                uint64 closePart = sz < shortAbs ? sz : shortAbs;
+                if (closePart > 0) {
+                    _placePerpIoc(perpIx, true, closePart, true);
+                }
+                if (sz > closePart) {
+                    _placePerpIoc(perpIx, true, sz - closePart, false);
+                    leg = 3;
+                } else {
+                    leg = 2;
+                }
+            }
+        } else {
+            if (pos <= 0) {
+                _placePerpIoc(perpIx, false, sz, false);
+                leg = 1;
+            } else {
+                uint64 longAbs = uint64(uint256(int256(pos)));
+                uint64 closePart = sz < longAbs ? sz : longAbs;
+                if (closePart > 0) {
+                    _placePerpIoc(perpIx, false, closePart, true);
+                }
+                if (sz > closePart) {
+                    _placePerpIoc(perpIx, false, sz - closePart, false);
+                    leg = 3;
+                } else {
+                    leg = 2;
+                }
+            }
+        }
+        lastHedgeLeg = leg;
+    }
+
+    /// @dev Move USDC from perp → spot → EVM up to `maxEvmAmount` (6-decimal USDC) to refill the vault for swap payouts / LP.
+    function _pullPerpUsdcToEvmUpTo(uint256 maxEvmAmount) internal {
+        if (maxEvmAmount == 0) return;
+        uint64 coreWei = HLConversions.evmToWei(usdc, maxEvmAmount);
+        uint64 perpNtl = HLConversions.weiToPerp(coreWei);
+        if (perpNtl == 0) return;
+        CoreWriterLib.transferUsdClass(perpNtl, false);
+        CoreWriterLib.bridgeToEvm(usdc, maxEvmAmount);
+    }
+
+    function _topUpVaultUsdcFromPerpForAmount(uint256 minEvmBalance) internal {
+        uint256 bal = IERC20(usdc).balanceOf(address(this));
+        if (bal >= minEvmBalance) return;
+        _pullPerpUsdcToEvmUpTo(minEvmBalance - bal);
+    }
+
+    /// @dev HyperCore spot → HyperEVM for a linked ERC20 (`bridgeToEvm` / `spotSend` in CoreWriterLib). Requires Core spot balance + HYPE on Core for transfer gas per HL docs.
+    function _pullCoreSpotTokenToEvmUpTo(address token, uint256 maxEvmAmount) internal {
+        if (maxEvmAmount == 0) return;
+        CoreWriterLib.bridgeToEvm(token, maxEvmAmount);
+    }
+
+    function _topUpVaultTokenFromCoreSpot(address token, uint256 minEvmBalance) internal {
+        uint256 bal = IERC20(token).balanceOf(address(this));
+        if (bal >= minEvmBalance) return;
+        _pullCoreSpotTokenToEvmUpTo(token, minEvmBalance - bal);
     }
 
     function _flushBuyAndPayouts(uint32 perpIx) internal {
         uint256 batch = pendingHedgeBuySz;
         pendingHedgeBuySz = 0;
         if (batch > type(uint64).max) revert HedgeBatchTooLarge();
-        _placePerpIoc(perpIx, true, uint64(batch));
+        _netHedgePosition(perpIx, true, uint64(batch));
         emit HedgeBatchExecuted(perpIx, true, batch);
         uint256 n = _pendingPayoutsBuy.length;
         for (uint256 i = 0; i < n; i++) {
@@ -202,7 +333,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 batch = pendingHedgeSellSz;
         pendingHedgeSellSz = 0;
         if (batch > type(uint64).max) revert HedgeBatchTooLarge();
-        _placePerpIoc(perpIx, false, uint64(batch));
+        _netHedgePosition(perpIx, false, uint64(batch));
         emit HedgeBatchExecuted(perpIx, false, batch);
         uint256 n = _pendingPayoutsSell.length;
         for (uint256 i = 0; i < n; i++) {
@@ -280,8 +411,24 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         bool isBuy = vaultPurrOut;
 
+        // If dynamic threshold dropped (e.g. mark moved), flush older queued hedges before this swap’s slice.
+        if (_hedgeBatching()) {
+            uint256 batchThresh = _hedgeSzThreshold(perpIx);
+            if (pendingHedgeBuySz >= batchThresh) {
+                _flushBuyAndPayouts(perpIx);
+            }
+            if (pendingHedgeSellSz >= batchThresh) {
+                _flushSellAndPayouts(perpIx);
+            }
+        }
+
         if (!_hedgeBatching()) {
-            _placePerpIoc(perpIx, isBuy, sz);
+            _netHedgePosition(perpIx, isBuy, sz);
+            if (swapTokenOut == usdc) {
+                _topUpVaultUsdcFromPerpForAmount(amountOut);
+            } else {
+                _topUpVaultTokenFromCoreSpot(swapTokenOut, amountOut);
+            }
             emit SwapHedgeExecuted(perpIx, vaultPurrOut, purrAmountWei, sz);
             return true;
         }
@@ -345,6 +492,28 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         return _pendingPayoutsSell.length;
     }
 
+    /// @notice Runs batched hedge IOCs and pays escrowed `tokenOut`s even when below the normal min-`sz` threshold (same as a full batch flush).
+    function forceFlushHedgeBatch() external nonReentrant {
+        uint32 perpIx = hedgePerpAssetIndex;
+        if (perpIx == 0) return;
+        if (pendingHedgeBuySz > 0) {
+            _flushBuyAndPayouts(perpIx);
+        }
+        if (pendingHedgeSellSz > 0) {
+            _flushSellAndPayouts(perpIx);
+        }
+    }
+
+    /// @notice Pulls USDC from HyperCore perp → spot → this contract on EVM, up to `maxEvmAmount` (6‑decimals).
+    function pullPerpUsdcToEvm(uint256 maxEvmAmount) external nonReentrant {
+        _pullPerpUsdcToEvmUpTo(maxEvmAmount);
+    }
+
+    /// @notice Pulls a linked spot asset from HyperCore spot to this contract on HyperEVM (see HL Core ↔ EVM linking).
+    function pullCoreSpotTokenToEvm(address token, uint256 maxEvmAmount) external nonReentrant {
+        _pullCoreSpotTokenToEvmUpTo(token, maxEvmAmount);
+    }
+
     function _toU64(uint256 x) internal pure returns (uint64) {
         require(x <= type(uint64).max, "AMOUNT_TOO_LARGE");
         return uint64(x);
@@ -386,17 +555,21 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             token.safeTransfer(recipient, _amount);
             return;
         }
-        require(internalBalance + totalAllocatedUSDC >= _amount, "INSUFFICIENT_BUFFER");
-        if (_token == usdc) {
-            uint256 amountNeeded = _amount - internalBalance;
 
-            // transfers from vault to core and bridges to evm
-            CoreWriterLib.vaultTransfer(defaultVault, false, uint64(amountNeeded));
+        uint256 amountNeeded = _amount - internalBalance;
+
+        if (_token == usdc) {
+            require(internalBalance + totalAllocatedUSDC >= _amount, "INSUFFICIENT_BUFFER");
+            CoreWriterLib.vaultTransfer(defaultVault, false, _toU64(amountNeeded));
             CoreWriterLib.bridgeToEvm(usdc, amountNeeded);
-            uint256 finalBalance = token.balanceOf(address(this));
-            if (finalBalance < _amount) revert InsufficientFundsAfterWithdraw();
-            IERC20(usdc).safeTransfer(recipient, _amount);
+        } else {
+            // Linked HyperCore spot asset (e.g. PURR): pull Core spot → EVM via system `spotSend` (CoreWriterLib.bridgeToEvm).
+            CoreWriterLib.bridgeToEvm(_token, amountNeeded);
         }
+
+        uint256 finalBalance = token.balanceOf(address(this));
+        if (finalBalance < _amount) revert InsufficientFundsAfterWithdraw();
+        token.safeTransfer(recipient, _amount);
     }
 
     // Sends tokens to recipient, withdrawing from lending market if needed
@@ -418,6 +591,30 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     function bridgeToCoreOnly(uint256 usdcAmount) external onlyStrategist {
         CoreWriterLib.bridgeToCore(usdc, usdcAmount);
         emit BridgedToCore(usdc, usdcAmount);
+    }
+
+    /// @notice First USDC bridge to HyperCore spot for this address — establishes the Core account / spot balance in a **dedicated tx** before CoreWriter-heavy flows.
+    /// @dev USDC is assumed 6 decimals on HyperEVM (same as `MIN_CORE_BOOTSTRAP_USDC`).
+    function bootstrapHyperCoreAccount(uint256 usdcAmount) external onlyStrategist nonReentrant {
+        if (usdcAmount < MIN_CORE_BOOTSTRAP_USDC) {
+            revert BootstrapAmountTooSmall(MIN_CORE_BOOTSTRAP_USDC, usdcAmount);
+        }
+        CoreWriterLib.bridgeToCore(usdc, usdcAmount);
+        emit BridgedToCore(usdc, usdcAmount);
+    }
+
+    /// @notice Bridge any linked HyperEVM ERC20 (e.g. pool base asset) from this vault to HyperCore spot — use when USDC is tight but base inventory should sit on Core for hedging / spot.
+    function bridgeInventoryTokenToCore(address token, uint256 amount) external onlyStrategist nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        CoreWriterLib.bridgeToCore(token, amount);
+        emit BridgedToCore(token, amount);
+    }
+
+    /// @notice Bridge native HYPE on HyperEVM to HyperCore spot (gas / fee token on Core).
+    function fundCoreWithHype() external payable onlyStrategist nonReentrant {
+        if (msg.value == 0) revert ZeroAmount();
+        CoreWriterLib.bridgeToCore(HLConstants.hypeTokenIndex(), msg.value);
+        emit HypeBridgedToCore(msg.value);
     }
 
     /// @notice Bridge USDC to Core and deposit into a specific Core vault (yield/trading)
@@ -563,7 +760,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
             // spotPrice: USDC per 1 PURR, scaled to usdcDec decimals
             // e.g. at $5 with 6-decimal USDC → spotPrice = 5_000_000
-            uint256 spotPrice = ISpotPricer(alm).getSpotPriceUSDCperPURR();
+            uint256 spotPrice = ISpotPricer(alm).getSpotPriceUsdcPerBase();
             uint256 purrScale = 10 ** uint256(purrDec);
 
             // Express everything in USDC units for a common denominator

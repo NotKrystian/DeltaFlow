@@ -1,15 +1,18 @@
 "use client";
 
 import { useReadContract, useReadContracts } from "wagmi";
-import { CONTRACTS, ALM_ABI, POOL_ABI, ERC20_ABI } from "../lib/contracts";
+import { ALM_ABI, POOL_ABI, ERC20_ABI } from "../lib/contracts";
 import { formatUnits } from "viem";
+import { useMarket } from "@/app/context/MarketContext";
+import { useMarketEvmDecimals } from "./useMarketEvmDecimals";
 
 // Spot price from ALM (USDC per 1 base, scaled per `rawPxScale` on-chain)
 export function useSpotPrice() {
+  const { market } = useMarket();
   const { data, isLoading, error, refetch } = useReadContract({
-    address: CONTRACTS.ALM,
+    address: market.alm,
     abi: ALM_ABI,
-    functionName: "getSpotPriceUSDCperPURR",
+    functionName: "getSpotPriceUsdcPerBase",
   });
 
   const rawPrice = data ? BigInt(data) : BigInt(0);
@@ -23,27 +26,28 @@ export function useSpotPrice() {
   };
 }
 
-// Hook to get pool info
+// Hook to get pool info for the selected market
 export function usePoolInfo() {
+  const { market } = useMarket();
   const { data, isLoading, error } = useReadContracts({
     contracts: [
       {
-        address: CONTRACTS.POOL,
+        address: market.pool,
         abi: POOL_ABI,
         functionName: "token0",
       },
       {
-        address: CONTRACTS.POOL,
+        address: market.pool,
         abi: POOL_ABI,
         functionName: "token1",
       },
       {
-        address: CONTRACTS.POOL,
+        address: market.pool,
         abi: POOL_ABI,
         functionName: "alm",
       },
       {
-        address: CONTRACTS.POOL,
+        address: market.pool,
         abi: POOL_ABI,
         functionName: "defaultSwapFeeBips",
       },
@@ -60,18 +64,23 @@ export function usePoolInfo() {
   };
 }
 
-// Hook to get token balances for a user
+// Balances for base + USDC for the connected user
 export function useTokenBalances(userAddress: `0x${string}` | undefined) {
+  const { market } = useMarket();
+  const base = market.tokens.BASE;
+  const usdc = market.tokens.USDC;
+  const { baseDecimals, usdcDecimals } = useMarketEvmDecimals();
+
   const { data, isLoading, error, refetch } = useReadContracts({
     contracts: [
       {
-        address: CONTRACTS.PURR,
+        address: base.address,
         abi: ERC20_ABI,
         functionName: "balanceOf",
         args: userAddress ? [userAddress] : undefined,
       },
       {
-        address: CONTRACTS.USDC,
+        address: usdc.address,
         abi: ERC20_ABI,
         functionName: "balanceOf",
         args: userAddress ? [userAddress] : undefined,
@@ -83,38 +92,18 @@ export function useTokenBalances(userAddress: `0x${string}` | undefined) {
   });
 
   return {
-    purrBalance: data?.[0]?.result as bigint | undefined,
+    baseBalance: data?.[0]?.result as bigint | undefined,
     usdcBalance: data?.[1]?.result as bigint | undefined,
-    formattedPurr: data?.[0]?.result
-      ? formatUnits(data[0].result as bigint, 5)
+    purrBalance: data?.[0]?.result as bigint | undefined,
+    formattedBase: data?.[0]?.result
+      ? formatUnits(data[0].result as bigint, baseDecimals)
       : "0",
     formattedUsdc: data?.[1]?.result
-      ? formatUnits(data[1].result as bigint, 6)
+      ? formatUnits(data[1].result as bigint, usdcDecimals)
       : "0",
-    isLoading,
-    error,
-    refetch,
-  };
-}
-
-// Hook to get token allowance
-export function useTokenAllowance(
-  tokenAddress: `0x${string}`,
-  ownerAddress: `0x${string}` | undefined,
-  spenderAddress: `0x${string}`
-) {
-  const { data, isLoading, error, refetch } = useReadContract({
-    address: tokenAddress,
-    abi: ERC20_ABI,
-    functionName: "allowance",
-    args: ownerAddress ? [ownerAddress, spenderAddress] : undefined,
-    query: {
-      enabled: !!ownerAddress,
-    },
-  });
-
-  return {
-    allowance: data as bigint | undefined,
+    formattedPurr: data?.[0]?.result
+      ? formatUnits(data[0].result as bigint, baseDecimals)
+      : "0",
     isLoading,
     error,
     refetch,

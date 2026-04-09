@@ -3,12 +3,14 @@ pragma solidity ^0.8.19;
 
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+import {HLConversions} from "@hyper-evm-lib/src/common/HLConversions.sol";
 
 import {ISwapFeeModule, SwapFeeModuleData} from "../swap-fee-modules/interfaces/ISwapFeeModule.sol";
 
 import {BalanceSheet} from "./DeltaFlowTypes.sol";
 import {BalanceSheetLib} from "./BalanceSheetLib.sol";
 import {DeltaFlowFeeMath} from "./DeltaFlowFeeMath.sol";
+import {DeltaFeeHelper} from "./DeltaFeeHelper.sol";
 import {DeltaFlowRiskEngine} from "./DeltaFlowRiskEngine.sol";
 import {FeeSurplus} from "./FeeSurplus.sol";
 
@@ -25,8 +27,11 @@ interface IVaultHedgePending {
 
 /// @title DeltaFlowCompositeFeeModule
 /// @notice Risk engine + memo-style fee components; balance sheet = EVM + HyperCore spot + optional perp.
+/// @dev Unwind vs new-risk blend uses `DeltaFeeHelper.blendedQuoteBpsHtml` (`absPost < absPre` on estimated perp delta).
+///      `SovereignVault.lastHedgeLeg` mirrors IOC legs (open / reduce-only / both) for ops; fee quote uses the balance sheet, not `lastHedgeLeg` directly.
 contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
     uint256 internal constant WAD = 1e18;
+    uint256 internal constant BIPS = 10_000;
 
     address public immutable sovereignPool;
     address public immutable usdc;
@@ -130,21 +135,29 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
             ? Math.mulDiv(amountIn, WAD, 10 ** uint256(usdcDec))
             : BalanceSheetLib.usdcValueWadOfBase(amountIn, baseDec, px, usdcDec);
 
-        bool unwind = _isUnwind(tokenIn, sheet.perpSzi);
+        // Net trade size for hedge `sz` delta (10 bps conservative seed → amountInNet).
+        uint256 amountInNet = Math.mulDiv(amountIn, BIPS, BIPS + 10);
+        int256 deltaSz =
+            _estimatePerpDeltaSz(tokenIn, tokenOut, amountInNet, px, usdcDec, baseDec);
+
+        DeltaFlowFeeMath.FeeParams memory p = feeParams;
+
+        uint256 rawBps = DeltaFeeHelper.blendedQuoteBpsHtml(
+            sheet,
+            p,
+            tradeNotionalWad,
+            volatileRegimeFlag,
+            sheet.perpSzi,
+            deltaSz,
+            p.hMaxSz,
+            p.poolNavWad
+        );
+
+        uint256 absPre = DeltaFeeHelper.absInt(sheet.perpSzi);
+        int256 hPost = sheet.perpSzi + deltaSz;
+        uint256 absPost = DeltaFeeHelper.absInt(hPost);
+        bool unwind = absPost < absPre;
         bool newRisk = !unwind;
-
-        uint256 uPre = capacityWad > 0 ? Math.min(WAD, Math.mulDiv(sheet.shortfallWad, WAD, capacityWad)) : 0;
-        uint256 uPost = capacityWad > 0
-            ? Math.min(WAD, Math.mulDiv(sheet.shortfallWad + tradeNotionalWad / 10, WAD, capacityWad))
-            : 0;
-
-        uint256 rawBps = unwind
-            ? DeltaFlowFeeMath.unwindFeeBps(uPre, uPost)
-            : DeltaFlowFeeMath.computeNewRiskFeeBps(sheet, feeParams, tradeNotionalWad, volatileRegimeFlag);
-
-        if (rawBps < 10 && !unwind) {
-            rawBps = 10;
-        }
 
         riskEngine.validate(sheet, rawBps, unwind, newRisk);
 
@@ -170,10 +183,27 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         }
     }
 
-    /// @dev Heuristic: user sells base into pool while perp long → unwind; user buys base while perp short → unwind.
-    function _isUnwind(address tokenIn, int256 szi) internal view returns (bool) {
-        if (tokenIn == base && szi > 0) return true;
-        if (tokenIn == usdc && szi < 0) return true;
-        return false;
+    /// @dev Estimated HL `sz` delta from this swap (buy base → add long hedge sz; sell base → reduce).
+    function _estimatePerpDeltaSz(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountInNet,
+        uint256 px,
+        uint8 usdcDec,
+        uint8 baseDec
+    ) internal view returns (int256) {
+        if (tokenIn == usdc && tokenOut == base) {
+            uint256 outWei = Math.mulDiv(amountInNet, 10 ** uint256(baseDec), px);
+            if (outWei == 0) return 0;
+            if (outWei > type(uint64).max) outWei = type(uint64).max;
+            uint64 sz = HLConversions.weiToSz(base, uint64(outWei));
+            return int256(uint256(sz));
+        }
+        if (tokenIn == base && tokenOut == usdc) {
+            uint256 a = amountInNet > type(uint64).max ? type(uint64).max : amountInNet;
+            uint64 sz = HLConversions.weiToSz(base, uint64(a));
+            return -int256(uint256(sz));
+        }
+        return 0;
     }
 }

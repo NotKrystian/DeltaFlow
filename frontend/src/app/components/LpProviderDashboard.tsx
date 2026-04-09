@@ -19,13 +19,10 @@ import {
   ArrowUpCircle,
   Info,
 } from "lucide-react";
-import {
-  ADDRESSES,
-  ERC20_ABI,
-  SOVEREIGN_VAULT_ABI,
-  TOKENS,
-} from "@/contracts";
+import { ERC20_ABI, SOVEREIGN_VAULT_ABI } from "@/contracts";
 import { useVaultLp } from "../hooks/useVaultLp";
+import { useMarket } from "@/app/context/MarketContext";
+import { useMarketEvmDecimals } from "@/app/hooks/useMarketEvmDecimals";
 
 function Stat({
   label,
@@ -53,7 +50,10 @@ function Stat({
 
 export default function LpProviderDashboard() {
   const { address, isConnected } = useAccount();
-  const vault = ADDRESSES.VAULT;
+  const { market } = useMarket();
+  const vault = market.vault;
+  const baseTok = market.tokens.BASE;
+  const { baseDecimals, usdcDecimals } = useMarketEvmDecimals();
   const {
     lpSymbol,
     lpDecimals,
@@ -66,28 +66,29 @@ export default function LpProviderDashboard() {
     hasFeeSurplus,
     totalSupply,
     formatUsdc,
-    formatPurr,
+    formatBase,
     formatShares,
     isLoading,
     refetch,
     reserveUsdc,
     reservePurr,
+    baseSymbol,
   } = useVaultLp();
 
   const [depUsdc, setDepUsdc] = useState("");
-  const [depPurr, setDepPurr] = useState("");
+  const [depBase, setDepBase] = useState("");
   const [wdPct, setWdPct] = useState("");
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
   const { data: usdcAllowance, refetch: refetchAllowUsdc } = useReadContract({
-    address: TOKENS.USDC.address,
+    address: market.tokens.USDC.address,
     abi: ERC20_ABI,
     functionName: "allowance",
     args: address ? [address, vault] : undefined,
     query: { enabled: !!address },
   });
-  const { data: purrAllowance, refetch: refetchAllowPurr } = useReadContract({
-    address: TOKENS.PURR.address,
+  const { data: baseAllowance, refetch: refetchAllowBase } = useReadContract({
+    address: baseTok.address,
     abi: ERC20_ABI,
     functionName: "allowance",
     args: address ? [address, vault] : undefined,
@@ -96,18 +97,18 @@ export default function LpProviderDashboard() {
 
   const depUsdcParsed = useMemo(() => {
     try {
-      return depUsdc ? parseUnits(depUsdc, TOKENS.USDC.decimals) : 0n;
+      return depUsdc ? parseUnits(depUsdc, usdcDecimals) : 0n;
     } catch {
       return 0n;
     }
-  }, [depUsdc]);
-  const depPurrParsed = useMemo(() => {
+  }, [depUsdc, usdcDecimals]);
+  const depBaseParsed = useMemo(() => {
     try {
-      return depPurr ? parseUnits(depPurr, TOKENS.PURR.decimals) : 0n;
+      return depBase ? parseUnits(depBase, baseDecimals) : 0n;
     } catch {
       return 0n;
     }
-  }, [depPurr]);
+  }, [depBase, baseDecimals]);
 
   const withdrawShares = useMemo(() => {
     if (!userShares || !wdPct) return 0n;
@@ -128,23 +129,23 @@ export default function LpProviderDashboard() {
   const needsUsdcApprove =
     depUsdcParsed > 0n &&
     (usdcAllowance === undefined || usdcAllowance < depUsdcParsed);
-  const needsPurrApprove =
-    depPurrParsed > 0n &&
-    (purrAllowance === undefined || purrAllowance < depPurrParsed);
+  const needsBaseApprove =
+    depBaseParsed > 0n &&
+    (baseAllowance === undefined || baseAllowance < depBaseParsed);
 
   const refresh = useCallback(() => {
     refetch();
     refetchAllowUsdc();
-    refetchAllowPurr();
-  }, [refetch, refetchAllowUsdc, refetchAllowPurr]);
+    refetchAllowBase();
+  }, [refetch, refetchAllowUsdc, refetchAllowBase]);
 
   const handleApproveAndDeposit = async () => {
-    if (!address || (depUsdcParsed === 0n && depPurrParsed === 0n)) return;
+    if (!address || (depUsdcParsed === 0n && depBaseParsed === 0n)) return;
     if (!publicClient) return;
     try {
       if (needsUsdcApprove && depUsdcParsed > 0n) {
         const h = await writeContractAsync({
-          address: TOKENS.USDC.address,
+          address: market.tokens.USDC.address,
           abi: ERC20_ABI,
           functionName: "approve",
           args: [vault, depUsdcParsed],
@@ -152,12 +153,12 @@ export default function LpProviderDashboard() {
         setTxHash(h);
         await publicClient.waitForTransactionReceipt({ hash: h });
       }
-      if (needsPurrApprove && depPurrParsed > 0n) {
+      if (needsBaseApprove && depBaseParsed > 0n) {
         const h = await writeContractAsync({
-          address: TOKENS.PURR.address,
+          address: baseTok.address,
           abi: ERC20_ABI,
           functionName: "approve",
-          args: [vault, depPurrParsed],
+          args: [vault, depBaseParsed],
         });
         setTxHash(h);
         await publicClient.waitForTransactionReceipt({ hash: h });
@@ -166,12 +167,12 @@ export default function LpProviderDashboard() {
         address: vault,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "depositLP",
-        args: [depUsdcParsed, depPurrParsed, 0n],
+        args: [depUsdcParsed, depBaseParsed, 0n],
       });
       setTxHash(h);
       await publicClient.waitForTransactionReceipt({ hash: h });
       setDepUsdc("");
-      setDepPurr("");
+      setDepBase("");
       refresh();
     } catch (e) {
       console.error(e);
@@ -226,7 +227,7 @@ export default function LpProviderDashboard() {
           value={
             poolValueUsdc !== undefined ? formatUsdc(poolValueUsdc) : isLoading ? "…" : "—"
           }
-          sub="USDC + PURR at ALM spot"
+          sub={`USDC + ${baseSymbol} at ALM spot`}
         />
         <Stat
           label={`Your ${lpSymbol}`}
@@ -275,7 +276,7 @@ export default function LpProviderDashboard() {
           Pro-rata surplus is illustrative: surplus accrues in{" "}
           <code className="text-[var(--foreground)]">FeeSurplus</code> as a risk
           buffer, not an automatic claim. Your LP value tracks vault reserves
-          (USDC + PURR + allocated Core USDC) via{" "}
+          (USDC + {baseSymbol} + allocated Core USDC) via{" "}
           <code className="text-[var(--foreground)]">getReserves</code>.
         </p>
       </div>
@@ -308,12 +309,12 @@ export default function LpProviderDashboard() {
               className="w-full mb-3 px-4 py-3 rounded-xl bg-[var(--input-bg)] border border-[var(--border)] text-[var(--foreground)]"
             />
             <label className="block text-sm text-[var(--text-muted)] mb-1">
-              PURR
+              {baseSymbol}
             </label>
             <input
-              value={depPurr}
+              value={depBase}
               onChange={(e) =>
-                setDepPurr(e.target.value.replace(/[^0-9.]/g, ""))
+                setDepBase(e.target.value.replace(/[^0-9.]/g, ""))
               }
               placeholder="0"
               className="w-full mb-4 px-4 py-3 rounded-xl bg-[var(--input-bg)] border border-[var(--border)] text-[var(--foreground)]"
@@ -322,7 +323,7 @@ export default function LpProviderDashboard() {
               type="button"
               disabled={
                 busy ||
-                (depUsdcParsed === 0n && depPurrParsed === 0n)
+                (depUsdcParsed === 0n && depBaseParsed === 0n)
               }
               onClick={handleApproveAndDeposit}
               className="w-full py-3 rounded-xl font-medium bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] disabled:opacity-50 flex justify-center gap-2"
@@ -332,7 +333,7 @@ export default function LpProviderDashboard() {
               ) : (
                 <Coins size={20} />
               )}
-              {needsUsdcApprove || needsPurrApprove
+              {needsUsdcApprove || needsBaseApprove
                 ? "Approve & deposit"
                 : "Deposit"}
             </button>
@@ -395,9 +396,9 @@ export default function LpProviderDashboard() {
             </span>
           </div>
           <div className="flex justify-between py-2 border-b border-[var(--border)]">
-            <span className="text-[var(--text-muted)]">PURR</span>
+            <span className="text-[var(--text-muted)]">{baseSymbol}</span>
             <span className="font-mono text-[var(--foreground)]">
-              {reservePurr !== undefined ? formatPurr(reservePurr) : "—"}
+              {reservePurr !== undefined ? formatBase(reservePurr) : "—"}
             </span>
           </div>
           <div className="flex justify-between py-2 border-b border-[var(--border)]">

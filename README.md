@@ -21,7 +21,7 @@ Published documentation is maintained under [`docs/`](./docs/). The repo include
 - Delta Vault
 - Delta ALM
 - Delta Swap-Fee
-- Delta Liqudity Hedging Operator
+- Delta Liquidity Hedging Operator
 
 ## Delta Vault
 
@@ -57,12 +57,14 @@ To further avoid deviations in pool balances, we apply a linearly increasing fee
 Target condition (healthy state):
 
 ```
-USDC/PURR * spot price
+USDC_value(base reserves) ≈ USDC_value(USDC reserves)  (at spot)
 ```
 
 ## Delta Liquidity Hedging Operations
 
-**On-chain (vault-backed pools):** Before **`tokenOut`**, **`SovereignVault.processSwapHedge`** runs: **HyperCore perp** IOC via **CoreWriter**, sized to the PURR leg. The pool and vault share **`hedgePerpAssetIndex`**; misconfiguration reverts swaps. With **`minPerpHedgeSz > 0`**, sub-minimum hedges **escrow** the quoted output until the hedge bucket reaches the HL minimum, then **one IOC** pays **all** queued recipients in that batch (a large swap can trigger the batch). With **`minPerpHedgeSz == 0`**, each swap gets an immediate IOC and immediate **`tokenOut`**. Full detail: [`docs/architecture/current-implementation.md`](./docs/architecture/current-implementation.md).
+**On-chain (vault-backed pools):** Before **`tokenOut`**, **`SovereignVault.processSwapHedge`** runs: **HyperCore perp** IOC via **CoreWriter**, sized to the **base** leg (the non-USDC pool asset). The pool and vault share **`hedgePerpAssetIndex`**; misconfiguration reverts swaps. **`_netHedgePosition`** may **reduce-only unwind** first, then open residual size; the vault exposes **`lastHedgeLeg`** for ops. With batching (**`useMarkBasedMinHedgeSz`** or **`minPerpHedgeSz > 0`**), sub-threshold hedges **escrow** **`tokenOut`** until the bucket clears, then **IOC + payouts**. Full detail: [`docs/architecture/current-implementation.md`](./docs/architecture/current-implementation.md).
+
+**Strategist (Core):** Run **`bootstrapHyperCoreAccount`** (min USDC) in a **dedicated tx** before heavy CoreWriter use; **`bridgeInventoryTokenToCore`**, **`fundCoreWithHype`**, **`forceFlushHedgeBatch`**, **`pullPerpUsdcToEvm`**, **`pullCoreSpotTokenToEvm`** — see the same doc and the **Strategist** page in the app.
 
 **Optional API wallet / off-chain:** A strategist can still use an approved agent for additional spot or perp operations on HyperCore beyond this automatic path.
 
@@ -104,15 +106,18 @@ Manual equivalent:
 RPC=https://rpc.hyperliquid-testnet.xyz/evm
 forge script contracts/script/DeployAll.s.sol:DeployAll \
   --rpc-url "$RPC" \
-  --fork-url "$RPC" \
   --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
   --broadcast -vvvv
 RPC_URL="$RPC" python3 scripts/sync_env_from_broadcast.py
 ```
 
-`DeployAll` uses `PrecompileLib` for HedgeEscrow; **fork** the HyperEVM RPC for simulation or the script reverts on precompiles. Prefer **`./scripts/deploy_all_testnet.sh`**, which sets `--fork-url` and `--fork-block-number` automatically.
+`DeployAll` uses **`PrecompileLib.getTokenIndex`** (registry) for HedgeEscrow’s Core token index; the spot **universe** index comes from your **`SPOT_INDEX_*`** env vars (the on-chain `getSpotIndex` path hits precompile **`0x080C`**, which Forge’s simulator cannot execute). Prefer **`./scripts/deploy_all_testnet.sh`** (`--rpc-url` + `--fork-block-number` for realistic forked state).
 
 See [`scripts/sync_env_from_broadcast.py`](./scripts/sync_env_from_broadcast.py) for flags (`--dry-run`, custom paths).
+
+**Broadcast error `exceeds block gas limit` (-32603):** HyperEVM uses [dual blocks](https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/hyperevm/dual-block-architecture): **fast blocks ~2–3M gas** (default) vs **slow “big” blocks ~30M gas**. Large contract deployments (for example `SovereignVault`) need **big blocks**. Enable **`usingBigBlocks`** for your deployer via Core action `evmUserModify`, or use a community toggle (search “HyperEVM big blocks toggle”). Until this is set, transactions that need more gas than a small block’s limit are rejected.
+
+**Broadcast error `nonce too high` (-32003):** The default deploy script **does not** use **`--slow`** (batched / faster). If the public RPC races nonces, run **`DEPLOY_SLOW=1 ./scripts/deploy_all_testnet.sh`** for sequential confirmations, or **wait for pending txs to clear** and check **`cast nonce <DEPLOYER> --rpc-url …`** vs **`--block pending`**. If some txs already landed, continue with **`forge script contracts/script/DeployAll.s.sol:DeployAll --resume --rpc-url "$RPC" --broadcast`**. Do not delete `broadcast/` blindly if you need **`--resume`**.
 
 Optional: `./check_deploy.sh` with **`POOL`**, **`VAULT`**, **`ALM`**, **`SWAP_FEE_MODULE`**, **`DEPLOYER`**, **`POOL_MANAGER`** exported to match your broadcast.
 

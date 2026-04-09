@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { Wallet } from "lucide-react";
+import MarketSwitcher from "@/app/components/MarketSwitcher";
 
 const nav = [
   { href: "/", label: "Trade" },
@@ -52,8 +53,10 @@ export default function Header() {
             </nav>
           </div>
 
-          {/* Connect button (custom styled) */}
-          <ConnectButton.Custom>
+          <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+            <MarketSwitcher />
+            {/* Connect button (custom styled) */}
+            <ConnectButton.Custom>
             {({
               account,
               chain,
@@ -153,7 +156,8 @@ export default function Header() {
                 </div>
               );
             }}
-          </ConnectButton.Custom>
+            </ConnectButton.Custom>
+          </div>
         </div>
       </div>
     </header>

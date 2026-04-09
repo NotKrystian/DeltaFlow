@@ -8,7 +8,7 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from "wagmi";
-import { formatUnits, parseUnits } from "viem";
+import { formatUnits, parseEther, parseUnits } from "viem";
 import {
   RefreshCw,
   ChevronDown,
@@ -23,13 +23,14 @@ import {
   ArrowUpFromLine,
 } from "lucide-react";
 import {
-  ADDRESSES,
-  TOKENS,
   SOVEREIGN_POOL_ABI,
   SOVEREIGN_VAULT_ABI,
   SOVEREIGN_ALM_ABI,
   ERC20_ABI,
 } from "@/contracts";
+import { useMarket } from "@/app/context/MarketContext";
+import { useMarketEvmDecimals } from "@/app/hooks/useMarketEvmDecimals";
+import PoolSkewFeeCard from "@/app/components/PoolSkewFeeCard";
 
 // ──────────────────────────────────────────────────────────────
 // HyperCore Read Precompile (Spot Balance)
@@ -59,24 +60,6 @@ const L1READ_SPOT_BALANCE_ABI = [
         ],
       },
     ],
-  },
-] as const;
-
-// Minimal ABI for the new vault bridge functions (in case your imported ABI lacks them)
-const VAULT_BRIDGE_ABI = [
-  {
-    type: "function",
-    name: "bridgeToCoreOnly",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "usdcAmount", type: "uint256" }],
-    outputs: [],
-  },
-  {
-    type: "function",
-    name: "bridgeToEvmOnly",
-    stateMutability: "nonpayable",
-    inputs: [{ name: "usdcAmount", type: "uint256" }],
-    outputs: [],
   },
 ] as const;
 
@@ -261,19 +244,41 @@ function safeFormatUnits(value: bigint | undefined, decimals: number): string {
   }
 }
 
+function hedgeLegLabel(leg: number | bigint | undefined): string {
+  if (leg === undefined) return "-";
+  const n = Number(leg);
+  if (n === 0) return "None";
+  if (n === 1) return "Open only";
+  if (n === 2) return "Unwind (reduce-only)";
+  if (n === 3) return "Unwind then open";
+  return String(n);
+}
+
 // ──────────────────────────────────────────────────────────────
 // Main Component
 // ──────────────────────────────────────────────────────────────
 
 export default function StrategistCard() {
   const { address: userAddress, isConnected } = useAccount();
+  const { market } = useMarket();
+  const usdcToken = market.tokens.USDC;
+  const baseToken = market.tokens.BASE;
+  const { baseDecimals: evmBaseDec, usdcDecimals: evmUsdcDec } =
+    useMarketEvmDecimals();
 
-  const [poolAddress, setPoolAddress] = useState<string>(ADDRESSES.POOL);
-  const [vaultAddress, setVaultAddress] = useState<string>(ADDRESSES.VAULT);
-  const [almAddress, setAlmAddress] = useState<string>(ADDRESSES.ALM);
+  const [poolAddress, setPoolAddress] = useState<string>(market.pool);
+  const [vaultAddress, setVaultAddress] = useState<string>(market.vault);
+  const [almAddress, setAlmAddress] = useState<string>(market.alm);
+
+  useEffect(() => {
+    setPoolAddress(market.pool);
+    setVaultAddress(market.vault);
+    setAlmAddress(market.alm);
+    setPullCoreToken(market.base);
+  }, [market.pool, market.vault, market.alm, market.base]);
 
   // Deposit state (EVM transfer to vault)
-  const [depositToken, setDepositToken] = useState<"USDC" | "PURR">("USDC");
+  const [depositToken, setDepositToken] = useState<"USDC" | "BASE">("USDC");
   const [depositAmount, setDepositAmount] = useState("");
   const [txHash, setTxHash] = useState<`0x${string}` | undefined>();
 
@@ -291,6 +296,13 @@ export default function StrategistCard() {
   const [bridgeDirection, setBridgeDirection] = useState<"toCore" | "toEvm">(
     "toCore",
   );
+
+  const [bootstrapUsdc, setBootstrapUsdc] = useState("");
+  const [invToCoreAmount, setInvToCoreAmount] = useState("");
+  const [hypeFundAmount, setHypeFundAmount] = useState("");
+  const [pullPerpMax, setPullPerpMax] = useState("");
+  const [pullCoreToken, setPullCoreToken] = useState("");
+  const [pullCoreMax, setPullCoreMax] = useState("");
 
   const isPoolDeployed =
     poolAddress !== "0x0000000000000000000000000000000000000000";
@@ -352,7 +364,7 @@ export default function StrategistCard() {
   }, []);
 
   const coreUsdc = coreTokenMeta["USDC"];
-  const corePurr = coreTokenMeta["PURR"];
+  const coreBase = coreTokenMeta[market.baseSymbol.toUpperCase()];
   const coreHype = coreTokenMeta["HYPE"];
 
   // ──────────────────────────────────────────────────────────────
@@ -435,6 +447,17 @@ export default function StrategistCard() {
     functionName: "isLocked",
     query: { enabled: isPoolDeployed },
   });
+
+  const reserveDecimals = useMemo(() => {
+    if (poolToken0 === undefined || poolToken1 === undefined) return null;
+    const u = usdcToken.address.toLowerCase();
+    const t0 = String(poolToken0).toLowerCase();
+    const t1 = String(poolToken1).toLowerCase();
+    return {
+      d0: t0 === u ? evmUsdcDec : evmBaseDec,
+      d1: t1 === u ? evmUsdcDec : evmBaseDec,
+    };
+  }, [poolToken0, poolToken1, usdcToken.address, baseToken.address, evmUsdcDec, evmBaseDec]);
 
   // ──────────────────────────────────────────────────────────────
   // Vault Data
@@ -528,20 +551,33 @@ export default function StrategistCard() {
     functionName: "hedgeSzThreshold",
     query: { enabled: isVaultDeployed },
   });
+  const { data: lastHedgeLeg, refetch: refetchLastLeg } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "lastHedgeLeg",
+    query: { enabled: isVaultDeployed },
+  });
+  const { data: minBootstrapUsdc, refetch: refetchMinBootstrap } =
+    useReadContract({
+      address: vaultAddress as `0x${string}`,
+      abi: SOVEREIGN_VAULT_ABI,
+      functionName: "MIN_CORE_BOOTSTRAP_USDC",
+      query: { enabled: isVaultDeployed },
+    });
 
   // Actual ERC20 balances at vault address (EVM)
   const { data: vaultUsdcActual, refetch: refetchVaultUsdcActual } =
     useReadContract({
-      address: TOKENS.USDC.address,
+      address: usdcToken.address,
       abi: ERC20_ABI,
       functionName: "balanceOf",
       args: [vaultAddress as `0x${string}`],
       query: { enabled: isVaultDeployed },
     });
 
-  const { data: vaultPurrActual, refetch: refetchVaultPurrActual } =
+  const { data: vaultBaseActual, refetch: refetchVaultBaseActual } =
     useReadContract({
-      address: TOKENS.PURR.address,
+      address: baseToken.address,
       abi: ERC20_ABI,
       functionName: "balanceOf",
       args: [vaultAddress as `0x${string}`],
@@ -570,16 +606,16 @@ export default function StrategistCard() {
       query: { enabled: isVaultDeployed && !!coreUsdc },
     });
 
-  const { data: vaultCorePurrBal, refetch: refetchVaultCorePurr } =
+  const { data: vaultCoreBaseBal, refetch: refetchVaultCoreBase } =
     useReadContract({
       address: SPOT_BALANCE_PRECOMPILE,
       abi: L1READ_SPOT_BALANCE_ABI,
       functionName: "spotBalance",
       args:
-        isVaultDeployed && corePurr
-          ? [vaultAddress as `0x${string}`, BigInt(corePurr.index)]
+        isVaultDeployed && coreBase
+          ? [vaultAddress as `0x${string}`, BigInt(coreBase.index)]
           : undefined,
-      query: { enabled: isVaultDeployed && !!corePurr },
+      query: { enabled: isVaultDeployed && !!coreBase },
     });
 
   const { data: vaultCoreHypeBal, refetch: refetchVaultCoreHype } =
@@ -605,7 +641,7 @@ export default function StrategistCard() {
   } = useReadContract({
     address: almAddress as `0x${string}`,
     abi: SOVEREIGN_ALM_ABI,
-    functionName: "getSpotPriceUSDCperPURR",
+    functionName: "getSpotPriceUsdcPerBase",
     query: { enabled: isAlmDeployed },
   });
 
@@ -619,8 +655,8 @@ export default function StrategistCard() {
   // ──────────────────────────────────────────────────────────────
   // Token Balances (User)
   // ──────────────────────────────────────────────────────────────
-  const { data: userPurrBalance, refetch: refetchPurrBal } = useReadContract({
-    address: TOKENS.PURR.address,
+  const { data: userBaseBalance, refetch: refetchBaseBal } = useReadContract({
+    address: baseToken.address,
     abi: ERC20_ABI,
     functionName: "balanceOf",
     args: userAddress ? [userAddress] : undefined,
@@ -628,7 +664,7 @@ export default function StrategistCard() {
   });
 
   const { data: userUsdcBalance, refetch: refetchUserUsdc } = useReadContract({
-    address: TOKENS.USDC.address,
+    address: usdcToken.address,
     abi: ERC20_ABI,
     functionName: "balanceOf",
     args: userAddress ? [userAddress] : undefined,
@@ -648,9 +684,10 @@ export default function StrategistCard() {
   const handleDeposit = async () => {
     if (!userAddress || !depositAmount || !isVaultDeployed) return;
 
-    const token = TOKENS[depositToken];
+    const dec = depositToken === "USDC" ? evmUsdcDec : evmBaseDec;
+    const token = depositToken === "USDC" ? usdcToken : baseToken;
     try {
-      const amount = parseUnits(depositAmount, token.decimals);
+      const amount = parseUnits(depositAmount, dec);
 
       // Transfer tokens directly to the vault (EVM)
       const hash = await writeContractAsync({
@@ -670,7 +707,7 @@ export default function StrategistCard() {
       return;
 
     try {
-      const amount = parseUnits(allocateAmount, TOKENS.USDC.decimals);
+      const amount = parseUnits(allocateAmount, evmUsdcDec);
 
       const hash = await writeContractAsync({
         address: vaultAddress as `0x${string}`,
@@ -689,7 +726,7 @@ export default function StrategistCard() {
       return;
 
     try {
-      const amount = parseUnits(allocateAmount, TOKENS.USDC.decimals);
+      const amount = parseUnits(allocateAmount, evmUsdcDec);
 
       const hash = await writeContractAsync({
         address: vaultAddress as `0x${string}`,
@@ -708,15 +745,11 @@ export default function StrategistCard() {
     if (!userAddress || !bridgeAmount || !isVaultDeployed) return;
 
     try {
-      const amount = parseUnits(bridgeAmount, TOKENS.USDC.decimals);
+      const amount = parseUnits(bridgeAmount, evmUsdcDec);
 
       const hash = await writeContractAsync({
         address: vaultAddress as `0x${string}`,
-        // merge ABIs so you don't care if the imported ABI already includes these
-        abi: [
-          ...SOVEREIGN_VAULT_ABI,
-          ...VAULT_BRIDGE_ABI,
-        ] as unknown as typeof SOVEREIGN_VAULT_ABI,
+        abi: SOVEREIGN_VAULT_ABI,
         functionName:
           bridgeDirection === "toCore" ? "bridgeToCoreOnly" : "bridgeToEvmOnly",
         args: [amount],
@@ -724,6 +757,104 @@ export default function StrategistCard() {
       setTxHash(hash);
     } catch (err) {
       console.error("Bridge failed:", err);
+    }
+  };
+
+  const handleBootstrapCore = async () => {
+    if (!isVaultDeployed || !bootstrapUsdc) return;
+    try {
+      const amount = parseUnits(bootstrapUsdc, evmUsdcDec);
+      const hash = await writeContractAsync({
+        address: vaultAddress as `0x${string}`,
+        abi: SOVEREIGN_VAULT_ABI,
+        functionName: "bootstrapHyperCoreAccount",
+        args: [amount],
+      });
+      setTxHash(hash);
+    } catch (err) {
+      console.error("bootstrapHyperCoreAccount failed:", err);
+    }
+  };
+
+  const handleBridgeInventoryToCore = async () => {
+    if (!isVaultDeployed || !invToCoreAmount) return;
+    try {
+      const amount = parseUnits(invToCoreAmount, evmBaseDec);
+      const hash = await writeContractAsync({
+        address: vaultAddress as `0x${string}`,
+        abi: SOVEREIGN_VAULT_ABI,
+        functionName: "bridgeInventoryTokenToCore",
+        args: [baseToken.address as `0x${string}`, amount],
+      });
+      setTxHash(hash);
+    } catch (err) {
+      console.error("bridgeInventoryTokenToCore failed:", err);
+    }
+  };
+
+  const handleFundHype = async () => {
+    if (!isVaultDeployed || !hypeFundAmount) return;
+    try {
+      const hash = await writeContractAsync({
+        address: vaultAddress as `0x${string}`,
+        abi: SOVEREIGN_VAULT_ABI,
+        functionName: "fundCoreWithHype",
+        value: parseEther(hypeFundAmount),
+      });
+      setTxHash(hash);
+    } catch (err) {
+      console.error("fundCoreWithHype failed:", err);
+    }
+  };
+
+  const handleForceFlush = async () => {
+    if (!isVaultDeployed) return;
+    try {
+      const hash = await writeContractAsync({
+        address: vaultAddress as `0x${string}`,
+        abi: SOVEREIGN_VAULT_ABI,
+        functionName: "forceFlushHedgeBatch",
+      });
+      setTxHash(hash);
+    } catch (err) {
+      console.error("forceFlushHedgeBatch failed:", err);
+    }
+  };
+
+  const handlePullPerp = async () => {
+    if (!isVaultDeployed || !pullPerpMax) return;
+    try {
+      const amount = parseUnits(pullPerpMax, evmUsdcDec);
+      const hash = await writeContractAsync({
+        address: vaultAddress as `0x${string}`,
+        abi: SOVEREIGN_VAULT_ABI,
+        functionName: "pullPerpUsdcToEvm",
+        args: [amount],
+      });
+      setTxHash(hash);
+    } catch (err) {
+      console.error("pullPerpUsdcToEvm failed:", err);
+    }
+  };
+
+  const handlePullCoreSpot = async () => {
+    if (!isVaultDeployed || !pullCoreMax || !pullCoreToken.trim()) return;
+    try {
+      const token = pullCoreToken.trim() as `0x${string}`;
+      const dec =
+        token.toLowerCase() === usdcToken.address.toLowerCase()
+          ? evmUsdcDec
+          : evmBaseDec;
+      const amount = parseUnits(pullCoreMax, dec);
+      const hash = await writeContractAsync({
+        address: vaultAddress as `0x${string}`,
+        abi: SOVEREIGN_VAULT_ABI,
+        functionName: "pullCoreSpotTokenToEvm",
+        args: [token, amount],
+      });
+      setTxHash(hash);
+    } catch (err) {
+      console.error("pullCoreSpotTokenToEvm failed:", err);
     }
   };
 
@@ -750,12 +881,12 @@ export default function StrategistCard() {
     refetchUsdcBal();
     refetchPoolAuth();
     refetchVaultUsdcActual();
-    refetchVaultPurrActual();
+    refetchVaultBaseActual();
     refetchVaultHypeEvm();
 
     // HyperCore balances
     refetchVaultCoreUsdc();
-    refetchVaultCorePurr();
+    refetchVaultCoreBase();
     refetchVaultCoreHype();
 
     refetchHedgePerp();
@@ -764,13 +895,15 @@ export default function StrategistCard() {
     refetchPendBuy();
     refetchPendSell();
     refetchHedgeTh();
+    refetchLastLeg();
+    refetchMinBootstrap();
 
     // ALM
     refetchSpot();
     refetchAlmPool();
 
     // User
-    refetchPurrBal();
+    refetchBaseBal();
     refetchUserUsdc();
   };
 
@@ -794,10 +927,10 @@ export default function StrategistCard() {
     return coreUsdc ? safeFormatUnits(total, coreUsdc.weiDecimals) : "-";
   }, [vaultCoreUsdcBal, coreUsdc]);
 
-  const vaultCorePurrTotal = useMemo(() => {
-    const total = pickSpotTotal(vaultCorePurrBal as SpotBalanceReturn);
-    return corePurr ? safeFormatUnits(total, corePurr.weiDecimals) : "-";
-  }, [vaultCorePurrBal, corePurr]);
+  const vaultCoreBaseTotal = useMemo(() => {
+    const total = pickSpotTotal(vaultCoreBaseBal as SpotBalanceReturn);
+    return coreBase ? safeFormatUnits(total, coreBase.weiDecimals) : "-";
+  }, [vaultCoreBaseBal, coreBase]);
 
   const vaultCoreHypeTotal = useMemo(() => {
     const total = pickSpotTotal(vaultCoreHypeBal as SpotBalanceReturn);
@@ -809,10 +942,10 @@ export default function StrategistCard() {
     return coreUsdc ? safeFormatUnits(hold, coreUsdc.weiDecimals) : "-";
   }, [vaultCoreUsdcBal, coreUsdc]);
 
-  const vaultCorePurrHold = useMemo(() => {
-    const hold = pickSpotHold(vaultCorePurrBal as SpotBalanceReturn);
-    return corePurr ? safeFormatUnits(hold, corePurr.weiDecimals) : "-";
-  }, [vaultCorePurrBal, corePurr]);
+  const vaultCoreBaseHold = useMemo(() => {
+    const hold = pickSpotHold(vaultCoreBaseBal as SpotBalanceReturn);
+    return coreBase ? safeFormatUnits(hold, coreBase.weiDecimals) : "-";
+  }, [vaultCoreBaseBal, coreBase]);
 
   const vaultCoreHypeHold = useMemo(() => {
     const hold = pickSpotHold(vaultCoreHypeBal as SpotBalanceReturn);
@@ -841,6 +974,14 @@ export default function StrategistCard() {
           </button>
         </div>
 
+        <div className="mb-6">
+          <PoolSkewFeeCard
+            poolAddress={poolAddress}
+            vaultAddress={vaultAddress}
+            almAddress={almAddress}
+          />
+        </div>
+
         {/* Contract Address Inputs */}
         <Section title="Contract Addresses" defaultOpen={true}>
           <AddressInput
@@ -864,11 +1005,11 @@ export default function StrategistCard() {
 
           <div className="mt-4 space-y-1">
             <AddressDisplay
-              address={TOKENS.PURR.address}
-              label="PURR Token (EVM)"
+              address={baseToken.address}
+              label={`${market.baseSymbol} Token (EVM)`}
             />
             <AddressDisplay
-              address={TOKENS.USDC.address}
+              address={usdcToken.address}
               label="USDC Token (EVM)"
             />
           </div>
@@ -885,19 +1026,19 @@ export default function StrategistCard() {
                 label="Connected Address"
               />
               <DataRow
-                label="PURR Balance"
+                label={`${market.baseSymbol} Balance`}
                 value={
-                  userPurrBalance
-                    ? formatUnits(userPurrBalance, TOKENS.PURR.decimals)
+                  userBaseBalance
+                    ? formatUnits(userBaseBalance, evmBaseDec)
                     : undefined
                 }
-                suffix="PURR"
+                suffix={market.baseSymbol}
               />
               <DataRow
                 label="USDC Balance"
                 value={
                   userUsdcBalance
-                    ? formatUnits(userUsdcBalance, TOKENS.USDC.decimals)
+                    ? formatUnits(userUsdcBalance, evmUsdcDec)
                     : undefined
                 }
                 suffix="USDC"
@@ -962,7 +1103,7 @@ export default function StrategistCard() {
 
                   {/* Token selector */}
                   <div className="flex gap-2">
-                    {(["USDC", "PURR"] as const).map((token) => (
+                    {(["USDC", "BASE"] as const).map((token) => (
                       <button
                         key={token}
                         onClick={() => setDepositToken(token)}
@@ -972,7 +1113,7 @@ export default function StrategistCard() {
                             : "bg-[var(--card)] border border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-hover)]"
                         }`}
                       >
-                        {token}
+                        {token === "BASE" ? market.baseSymbol : "USDC"}
                       </button>
                     ))}
                   </div>
@@ -995,12 +1136,12 @@ export default function StrategistCard() {
                       Your balance:{" "}
                       {depositToken === "USDC"
                         ? userUsdcBalance
-                          ? formatUnits(userUsdcBalance, TOKENS.USDC.decimals)
+                          ? formatUnits(userUsdcBalance, evmUsdcDec)
                           : "0"
-                        : userPurrBalance
-                          ? formatUnits(userPurrBalance, TOKENS.PURR.decimals)
+                        : userBaseBalance
+                          ? formatUnits(userBaseBalance, evmBaseDec)
                           : "0"}{" "}
-                      {depositToken}
+                      {depositToken === "BASE" ? market.baseSymbol : "USDC"}
                     </div>
                   </div>
 
@@ -1024,7 +1165,9 @@ export default function StrategistCard() {
                     ) : (
                       <>
                         <Send size={18} />
-                        Transfer {depositToken} to Vault
+                        Transfer{" "}
+                        {depositToken === "BASE" ? market.baseSymbol : "USDC"}{" "}
+                        to Vault
                       </>
                     )}
                   </button>
@@ -1086,7 +1229,7 @@ export default function StrategistCard() {
                     <div className="mt-1 text-xs text-[var(--text-muted)]">
                       Vault USDC (EVM):{" "}
                       {vaultUsdcActual
-                        ? formatUnits(vaultUsdcActual, TOKENS.USDC.decimals)
+                        ? formatUnits(vaultUsdcActual, evmUsdcDec)
                         : "0"}{" "}
                       USDC
                     </div>
@@ -1179,7 +1322,7 @@ export default function StrategistCard() {
                     <div className="mt-1 text-xs text-[var(--text-muted)]">
                       Vault USDC (EVM):{" "}
                       {vaultUsdcActual
-                        ? formatUnits(vaultUsdcActual, TOKENS.USDC.decimals)
+                        ? formatUnits(vaultUsdcActual, evmUsdcDec)
                         : "0"}{" "}
                       USDC
                     </div>
@@ -1282,8 +1425,8 @@ export default function StrategistCard() {
               <DataRow
                 label="Reserve 0"
                 value={
-                  reserves
-                    ? formatUnits(reserves[0], TOKENS.PURR.decimals)
+                  reserves && reserveDecimals
+                    ? formatUnits(reserves[0], reserveDecimals.d0)
                     : undefined
                 }
                 isLoading={loadingReserves}
@@ -1292,19 +1435,19 @@ export default function StrategistCard() {
               <DataRow
                 label="Reserve 1"
                 value={
-                  reserves
-                    ? formatUnits(reserves[1], TOKENS.USDC.decimals)
+                  reserves && reserveDecimals
+                    ? formatUnits(reserves[1], reserveDecimals.d1)
                     : undefined
                 }
                 isLoading={loadingReserves}
                 isError={errorReserves}
               />
               <DataRow
-                label="Base Swap Fee"
+                label="Pool default fee (immutable)"
                 value={swapFee ? `${Number(swapFee) / 100}%` : undefined}
                 isLoading={loadingFee}
                 isError={errorFee}
-                suffix={`(${swapFee} bips)`}
+                suffix={`(${swapFee} bips fallback if no module)`}
               />
 
               <AddressDisplay
@@ -1350,7 +1493,7 @@ export default function StrategistCard() {
                 label="getTotalAllocatedUSDC"
                 value={
                   totalAllocated
-                    ? formatUnits(totalAllocated, TOKENS.USDC.decimals)
+                    ? formatUnits(totalAllocated, evmUsdcDec)
                     : undefined
                 }
                 isLoading={loadingAllocated}
@@ -1362,7 +1505,7 @@ export default function StrategistCard() {
                 label="getUSDCBalance"
                 value={
                   usdcBalance
-                    ? formatUnits(usdcBalance, TOKENS.USDC.decimals)
+                    ? formatUnits(usdcBalance, evmUsdcDec)
                     : undefined
                 }
                 isLoading={loadingUsdcBal}
@@ -1412,12 +1555,178 @@ export default function StrategistCard() {
                   pendingSellSz !== undefined ? String(pendingSellSz) : undefined
                 }
               />
+              <DataRow
+                label="lastHedgeLeg (on-chain IOC leg)"
+                value={hedgeLegLabel(lastHedgeLeg)}
+              />
               <p className="text-xs text-[var(--text-muted)] mt-3">
+                Swap fees use memo-style unwind vs new-risk blending from the
+                balance sheet (
+                <code>DeltaFlowCompositeFeeModule</code>
+                ). <code>lastHedgeLeg</code> records the vault&apos;s last perp leg
+                (open / reduce-only / both) for ops.
+              </p>
+              <p className="text-xs text-[var(--text-muted)] mt-2">
                 Mark mode uses ~$10 HL min notional via{" "}
                 <code>normalizedMarkPx</code>. Opposite swap flow nets queued{" "}
                 <code>sz</code> before the next IOC.
               </p>
             </>
+          )}
+        </Section>
+
+        <div className="h-4" />
+
+        <Section title="Core account, inventory → Core, hedge pulls" defaultOpen={true}>
+          {!isVaultDeployed ? (
+            <p className="text-sm text-[var(--text-muted)]">Set vault address.</p>
+          ) : (
+            <div className="space-y-6">
+              <p className="text-xs text-[var(--text-muted)]">
+                Run bootstrap in its own tx before heavy CoreWriter use. Bridge{" "}
+                {market.baseSymbol} to Core when USDC is tight but base inventory
+                should fund Core spot for hedging. Native HYPE funds Core gas; low Core
+                HYPE is a good time to steer fee settlement toward HYPE off-chain.
+              </p>
+
+              <div className="rounded-xl border border-[var(--border)] p-4 space-y-3">
+                <p className="text-sm font-medium text-[var(--foreground)]">
+                  Create Core account (min USDC)
+                </p>
+                <p className="text-xs text-[var(--text-muted)]">
+                  Min:{" "}
+                  {minBootstrapUsdc !== undefined
+                    ? formatUnits(minBootstrapUsdc, evmUsdcDec)
+                    : "1"}{" "}
+                  USDC · <code>bootstrapHyperCoreAccount</code>
+                </p>
+                <input
+                  type="text"
+                  value={bootstrapUsdc}
+                  onChange={(e) =>
+                    setBootstrapUsdc(e.target.value.replace(/[^0-9.]/g, ""))
+                  }
+                  placeholder="USDC amount"
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleBootstrapCore}
+                  disabled={isLoading || !bootstrapUsdc}
+                  className="w-full py-2 rounded-lg bg-[var(--accent)] text-white text-sm font-medium disabled:opacity-50"
+                >
+                  bootstrapHyperCoreAccount
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-[var(--border)] p-4 space-y-3">
+                <p className="text-sm font-medium text-[var(--foreground)]">
+                  Bridge {market.baseSymbol} (EVM → Core spot)
+                </p>
+                <p className="text-xs text-[var(--text-muted)]">
+                  <code>bridgeInventoryTokenToCore</code>({market.baseSymbol})
+                </p>
+                <input
+                  type="text"
+                  value={invToCoreAmount}
+                  onChange={(e) =>
+                    setInvToCoreAmount(e.target.value.replace(/[^0-9.]/g, ""))
+                  }
+                  placeholder={`${market.baseSymbol} amount`}
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleBridgeInventoryToCore}
+                  disabled={isLoading || !invToCoreAmount}
+                  className="w-full py-2 rounded-lg bg-[var(--button-primary)] text-white text-sm font-medium disabled:opacity-50"
+                >
+                  bridgeInventoryTokenToCore
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-[var(--border)] p-4 space-y-3">
+                <p className="text-sm font-medium text-[var(--foreground)]">
+                  Fund Core with HYPE (native)
+                </p>
+                <input
+                  type="text"
+                  value={hypeFundAmount}
+                  onChange={(e) =>
+                    setHypeFundAmount(e.target.value.replace(/[^0-9.]/g, ""))
+                  }
+                  placeholder="HYPE (e.g. 0.5)"
+                  className="w-full px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={handleFundHype}
+                  disabled={isLoading || !hypeFundAmount}
+                  className="w-full py-2 rounded-lg bg-[var(--button-primary)] text-white text-sm font-medium disabled:opacity-50"
+                >
+                  fundCoreWithHype
+                </button>
+              </div>
+
+              <div className="rounded-xl border border-[var(--border)] p-4 space-y-3">
+                <p className="text-sm font-medium text-[var(--foreground)]">
+                  Flush & pull
+                </p>
+                <button
+                  type="button"
+                  onClick={handleForceFlush}
+                  disabled={isLoading}
+                  className="w-full py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-sm font-medium disabled:opacity-50"
+                >
+                  forceFlushHedgeBatch
+                </button>
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="text"
+                    value={pullPerpMax}
+                    onChange={(e) =>
+                      setPullPerpMax(e.target.value.replace(/[^0-9.]/g, ""))
+                    }
+                    placeholder="max USDC (perp → EVM)"
+                    className="w-full px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={handlePullPerp}
+                    disabled={isLoading || !pullPerpMax}
+                    className="w-full py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-sm font-medium disabled:opacity-50"
+                  >
+                    pullPerpUsdcToEvm
+                  </button>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <input
+                    type="text"
+                    value={pullCoreToken}
+                    onChange={(e) => setPullCoreToken(e.target.value)}
+                    placeholder="token address (default: base)"
+                    className="w-full px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] font-mono text-xs"
+                  />
+                  <input
+                    type="text"
+                    value={pullCoreMax}
+                    onChange={(e) =>
+                      setPullCoreMax(e.target.value.replace(/[^0-9.]/g, ""))
+                    }
+                    placeholder="max amount (USDC: 6 dec, else base dec)"
+                    className="w-full px-3 py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={handlePullCoreSpot}
+                    disabled={isLoading || !pullCoreMax}
+                    className="w-full py-2 rounded-lg bg-[var(--card)] border border-[var(--border)] text-sm font-medium disabled:opacity-50"
+                  >
+                    pullCoreSpotTokenToEvm
+                  </button>
+                </div>
+              </div>
+            </div>
           )}
         </Section>
 

@@ -44,7 +44,9 @@ You also need **native gas** on HyperEVM testnet for transactions, and **testnet
    DEPLOY_USDC_WETH=true
    ```
 
-   and fill **`SPOT_INDEX_WETH`**, **`INVERT_WETH_PX`**, **`PERP_INDEX_WETH`** (real perp index for WETH), same way as PURR. This produces a **second** vault + pool + ALM + HedgeEscrow in one run.
+   and fill **`SPOT_INDEX_WETH`**, **`INVERT_WETH_PX`**, **`PERP_INDEX_WETH`** (real perp index for WETH), same way as PURR. This produces a **second** vault + pool + ALM + HedgeEscrow.
+
+   With **`DEPLOY_USDC_WETH=true`**, `./scripts/deploy_all_testnet.sh` defaults to a **two-phase** broadcast: it deploys **USDC/PURR** first (keep **big blocks** on the deployer), **pauses** so you can switch the wallet to **small blocks** (~0.33s block time), then deploys **USDC/WETH**. Set **`DEPLOY_PAUSE_BETWEEN_STACKS=0`** in the shell if you want both stacks in a single `run()` without pausing.
 
 5. **Deploy and sync app env files**
 
@@ -61,7 +63,7 @@ You also need **native gas** on HyperEVM testnet for transactions, and **testnet
    ```bash
    RPC=https://rpc.hyperliquid-testnet.xyz/evm
    forge script contracts/script/DeployAll.s.sol:DeployAll \
-     --rpc-url "$RPC" --fork-url "$RPC" \
+     --rpc-url "$RPC" \
      --fork-block-number "$(cast block-number --rpc-url "$RPC")" \
      --broadcast -vvvv
    RPC_URL="$RPC" CHAIN_ID=998 \
@@ -77,7 +79,7 @@ You also need **native gas** on HyperEVM testnet for transactions, and **testnet
 7. **Backend URL for the Hedge tab** — in **`frontend/.env.local`** set:
 
    ```bash
-   NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000
+   NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:3000
    ```
 
    (Use your real backend URL in production.)
@@ -93,17 +95,19 @@ pip install -r requirements.txt
 python server.py
 ```
 
-Check **`GET http://127.0.0.1:8000/health`** — you should see `watchPool`, `swapPollIntervalS`, `lastSwapBlockProcessed`, etc.
+Check **`GET http://127.0.0.1:3000/health`** — you should see `watchPool`, `swapPollIntervalS`, `lastSwapBlockProcessed`, etc.
 
 **Terminal B — frontend**
+
+The API uses **port 3000** by default, so run Next.js on **3001** (or set **`PORT`** / **`NEXT_PUBLIC_BACKEND_URL`** consistently):
 
 ```bash
 cd frontend
 pnpm install
-pnpm dev
+pnpm dev -- -p 3001
 ```
 
-Open the printed URL (usually `http://localhost:3000`). In RainbowKit, **switch the wallet to Hyperliquid testnet (998)**.
+Open **`http://localhost:3001`**. In RainbowKit, **switch the wallet to Hyperliquid testnet (998)**.
 
 ## Make a few trades (USDC / PURR)
 
@@ -120,16 +124,22 @@ Amounts are **illustrative** — use whatever matches your testnet balance.
 - **PURR:** swap **~50 USDC → PURR** on the **Swap** tab (or until your PURR balance is ~$50 at the UI’s implied price). Keep some USDC left for fees and further swaps.
 - **LP (optional):** on **`/lp`**, deposit a mix of USDC and PURR so the vault holds inventory; your share % and value estimates appear on that page.
 
-## Second pool (USDC / WETH)
+## Second pool (secondary USDC / base)
 
-After **`DEPLOY_USDC_WETH=true`**, **`sync_env_from_broadcast.py`** writes **`NEXT_PUBLIC_POOL_WETH`**, **`NEXT_PUBLIC_VAULT_WETH`**, **`NEXT_PUBLIC_ALM_WETH`**, **`NEXT_PUBLIC_WETH`**, **`NEXT_PUBLIC_HEDGE_ESCROW_WETH`**, etc. The **default UI** still points **`NEXT_PUBLIC_POOL` / `VAULT` / `ALM`** at the **primary (PURR) stack**.
+After **`DEPLOY_USDC_WETH=true`**, **`sync_env_from_broadcast.py`** writes **`NEXT_PUBLIC_POOL_WETH`**, **`NEXT_PUBLIC_VAULT_WETH`**, **`NEXT_PUBLIC_ALM_WETH`**, **`NEXT_PUBLIC_WETH`**, **`NEXT_PUBLIC_HEDGE_ESCROW_WETH`**, etc.
 
-**Ways to exercise the WETH stack:**
+**Recommended:** Use the **header market switcher** (primary vs secondary) — no manual env swapping. Set optional **`NEXT_PUBLIC_PRIMARY_BASE_SYMBOL`** and **`NEXT_PUBLIC_SECONDARY_BASE_SYMBOL`** so buttons and copy match your deployed assets (defaults: **PURR** / **WETH**).
 
-1. **Temporary env switch (same repo):** copy the **WETH** pool, vault, and ALM addresses from `.env.local` into **`NEXT_PUBLIC_POOL`**, **`NEXT_PUBLIC_VAULT`**, **`NEXT_PUBLIC_ALM`**, set **`NEXT_PUBLIC_HEDGE_ESCROW`** to **`NEXT_PUBLIC_HEDGE_ESCROW_WETH`**, and point **`NEXT_PUBLIC_USDC`** / **`NEXT_PUBLIC_WETH`** as in the synced file. Restart **`pnpm dev`**. The UI’s labels still say PURR in places unless you customize — use for **integration testing** only.
-2. **CLI:** use **`cast send`** / scripts against **`POOL_WETH`** with the **USDC/WETH** pair ABI (advanced).
+**Alternatives:**
 
-For **~$50 USDC + ~$50 WETH** notional: fund USDC as above, obtain testnet **WETH** per HL docs, then swap or deposit into the **WETH** vault using the path you chose.
+1. **Temporary single-env override:** point **`NEXT_PUBLIC_POOL` / `VAULT` / `ALM`** at the secondary addresses only if you need a single-market build (integration testing).
+2. **CLI:** **`cast send`** / scripts against **`POOL_WETH`** with the pool ABI.
+
+For **~$50** notional on the secondary side: fund **USDC** and the **secondary base** token per HL testnet flows, then swap or deposit while the switcher is on **secondary**.
+
+## Strategist after redeploy
+
+If you use **CoreWriter**-heavy flows, run **`bootstrapHyperCoreAccount`** (min 1 USDC) on the vault **once** in its own transaction, then optional **`bridgeInventoryTokenToCore`**, **`fundCoreWithHype`**, etc. See [Current implementation — Strategist / protocol operations](../architecture/current-implementation.md) and the in-app **Strategist** page.
 
 ## Troubleshooting
 

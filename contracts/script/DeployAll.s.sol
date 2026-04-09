@@ -7,6 +7,7 @@ import "forge-std/console2.sol";
 import {AmmDeployBase} from "./AmmDeployBase.s.sol";
 
 contract DeployAll is AmmDeployBase {
+    /// @dev Full deploy in one broadcast (big blocks for all heavy CREATE txs — slow block time throughout).
     function run() external {
         Params memory p = _loadPurrParams();
         bool wethToo = vm.envOr("DEPLOY_USDC_WETH", false);
@@ -29,5 +30,36 @@ contract DeployAll is AmmDeployBase {
 
         console2.log("--- post-deploy: sync env files (addresses) ---");
         console2.log("python3 scripts/sync_env_from_broadcast.py   # merges broadcast/.../run-latest.json into frontend/.env.local + backend/.env");
+    }
+
+    /// @dev Phase 1 only — USDC/PURR. Use when pausing between stacks to switch wallet from big blocks to small blocks.
+    function runStackPurr() external {
+        Params memory p = _loadPurrParams();
+
+        console2.log("ChainId:", block.chainid);
+        console2.log("DeployAll phase: runStackPurr (USDC/PURR only)");
+        console2.log("Deployer:", p.deployer);
+
+        vm.startBroadcast(p.pk);
+        _deployOneStack(p, "USDC/PURR", false);
+        vm.stopBroadcast();
+
+        console2.log("--- Next: switch deployer to SMALL blocks, then run runStackWeth() or deploy_all_testnet.sh phase 2 ---");
+    }
+
+    /// @dev Phase 2 only — USDC/WETH. Run after `runStackPurr` with small blocks (and DEPLOY_USDC_WETH=true in env).
+    function runStackWeth() external {
+        require(vm.envOr("DEPLOY_USDC_WETH", false), "DEPLOY_USDC_WETH must be true for runStackWeth");
+
+        Params memory p = _loadPurrParams();
+        Params memory w = _loadWethParams(p);
+
+        console2.log("ChainId:", block.chainid);
+        console2.log("DeployAll phase: runStackWeth (USDC/WETH only)");
+        console2.log("Deployer:", p.deployer);
+
+        vm.startBroadcast(p.pk);
+        _deployOneStack(w, "USDC/WETH", true);
+        vm.stopBroadcast();
     }
 }

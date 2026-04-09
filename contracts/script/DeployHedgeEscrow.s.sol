@@ -9,8 +9,9 @@ import {HedgeEscrow} from "../src/HedgeEscrow.sol";
 
 /// @title DeployHedgeEscrow
 /// @notice Standalone HedgeEscrow deploy (e.g. replacement / custom pair). **`DeployAll` already deploys HedgeEscrow per stack.**
-/// @dev Uses `PrecompileLib` (HyperEVM registry + token info). Run `forge script` with
-/// `--fork-url https://rpc.hyperliquid-testnet.xyz/evm` and a valid `--fork-block-number` so simulation succeeds.
+/// @dev Uses registry `getTokenIndex` via `PrecompileLib`. Spot universe index is taken from env
+/// (`SPOT_INDEX_PURR`) — must match on-chain `getSpotIndex`; do not use `getSpotIndex` here (token info
+/// precompile `0x080C` is not runnable under `forge script` simulation).
 contract DeployHedgeEscrow is Script {
     function run() external {
         uint256 pk = vm.envUint("PRIVATE_KEY");
@@ -19,7 +20,7 @@ contract DeployHedgeEscrow is Script {
         address purr = vm.envAddress("PURR");
 
         uint64 purrTokenIndex = PrecompileLib.getTokenIndex(purr);
-        uint64 spotIdx = PrecompileLib.getSpotIndex(purr);
+        uint64 spotIdx = uint64(vm.envUint("SPOT_INDEX_PURR"));
         uint32 spotAssetIndex = uint32(uint256(10000) + uint256(spotIdx));
 
         console2.log("=== HedgeEscrow deploy ===");

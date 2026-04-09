@@ -41,4 +41,4 @@ Tune **`ESCROW_POLL_INTERVAL_S`** (default **4**), **`SWAP_POLL_INTERVAL_S`** (d
 
 ## Frontend
 
-Set **`NEXT_PUBLIC_HEDGE_ESCROW`** and **`NEXT_PUBLIC_BACKEND_URL`** (e.g. `http://127.0.0.1:8000`) for the **Hedge** tab.
+Set **`NEXT_PUBLIC_HEDGE_ESCROW`** and **`NEXT_PUBLIC_BACKEND_URL`** (e.g. `http://127.0.0.1:3000`) for the **Hedge** tab.

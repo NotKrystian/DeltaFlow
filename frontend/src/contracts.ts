@@ -54,7 +54,7 @@ export const TOKENS = {
   PURR: {
     address: ADDRESSES.PURR,
     symbol: "PURR",
-    decimals: 5,
+    decimals: 18,
     name: "PURR",
   },
   USDC: {
@@ -1084,6 +1084,20 @@ export const SOVEREIGN_VAULT_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
+  {
+    name: "lastHedgeLeg",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    name: "MIN_CORE_BOOTSTRAP_USDC",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 
   // Write Functions
   {
@@ -1148,6 +1162,54 @@ export const SOVEREIGN_VAULT_ABI = [
     outputs: [],
   },
   {
+    name: "bootstrapHyperCoreAccount",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "usdcAmount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    name: "bridgeInventoryTokenToCore",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
+    name: "fundCoreWithHype",
+    type: "function",
+    stateMutability: "payable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    name: "forceFlushHedgeBatch",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+  {
+    name: "pullPerpUsdcToEvm",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "maxEvmAmount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    name: "pullCoreSpotTokenToEvm",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "token", type: "address" },
+      { name: "maxEvmAmount", type: "uint256" },
+    ],
+    outputs: [],
+  },
+  {
     name: "claimPoolManagerFees",
     type: "function",
     stateMutability: "nonpayable",
@@ -1165,16 +1227,6 @@ export const SOVEREIGN_VAULT_ABI = [
       { name: "_token", type: "address" },
       { name: "recipient", type: "address" },
       { name: "_amount", type: "uint256" },
-    ],
-    outputs: [],
-  },
-  {
-    name: "setAuthorizedPool",
-    type: "function",
-    stateMutability: "nonpayable",
-    inputs: [
-      { name: "_pool", type: "address" },
-      { name: "_authorized", type: "bool" },
     ],
     outputs: [],
   },
@@ -1449,11 +1501,11 @@ export const SOVEREIGN_ALM_ABI = [
   },
 
   {
-    name: "getSpotPriceUSDCperPURR",
+    name: "getSpotPriceUsdcPerBase",
     type: "function",
     stateMutability: "view",
     inputs: [],
-    outputs: [{ name: "pxUSDCperPURR", type: "uint256" }],
+    outputs: [{ name: "pxUsdcPerBase", type: "uint256" }],
   },
 
   {

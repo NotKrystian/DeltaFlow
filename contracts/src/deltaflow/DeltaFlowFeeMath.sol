@@ -23,6 +23,14 @@ library DeltaFlowFeeMath {
         uint256 exhaustQuadWad;
         uint256 safetyBaseBps;
         bool delayStressed;
+        /// @dev HTML quote engine: `sqrt` impact denominator (WAD USDC-notional); 0 → 1 WAD.
+        uint256 perpDepthWad;
+        /// @dev Coefficient on `sqrt(notional/depth)` (HTML default 12).
+        uint256 impactCoeff;
+        /// @dev Max hedge `sz` for utilization = |H|/H_MAX (0 → treat as full util = WAD).
+        uint256 hMaxSz;
+        /// @dev POOL_NAV denominator for strategic bands (WAD); 0 → use `sheet.navWad`.
+        uint256 poolNavWad;
     }
 
     /// @notice Returns raw fee in **bips** (1 = 0.01%, same as `SovereignPool` feeInBips scale) before cap/reject.
