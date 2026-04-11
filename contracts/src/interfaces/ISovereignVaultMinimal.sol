@@ -24,6 +24,10 @@ interface ISovereignVaultMinimal {
 
     function sendTokensToRecipient(address _token, address _recipient, uint256 _amount) external;
 
+    /// @notice Mint LP shares to foundation against swap fees already received into the vault.
+    /// @dev Called by authorized pool after charging swap fee.
+    function creditSwapFeeToFoundation(address feeToken, uint256 feeAmount) external;
+
     /// @notice Hedge sizing + optional payout escrow when `minPerpHedgeSz > 0`. Pool calls before sending `tokenOut`.
     /// @param vaultPurrOut If true, the vault would pay PURR (hedge: buy perp). If false, vault receives PURR (hedge: sell perp).
     /// @param purrAmountWei PURR leg in EVM wei for hedge sizing.
@@ -34,6 +38,7 @@ interface ISovereignVaultMinimal {
     function processSwapHedge(
         bool vaultPurrOut,
         uint256 purrAmountWei,
+        uint256 usdcFeeProtected,
         address swapTokenOut,
         address recipient,
         uint256 amountOut

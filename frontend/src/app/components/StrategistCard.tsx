@@ -244,6 +244,13 @@ function safeFormatUnits(value: bigint | undefined, decimals: number): string {
   }
 }
 
+function isZeroAddr(a?: string): boolean {
+  return (
+    !a ||
+    a.toLowerCase() === "0x0000000000000000000000000000000000000000"
+  );
+}
+
 function hedgeLegLabel(leg: number | bigint | undefined): string {
   if (leg === undefined) return "-";
   const n = Number(leg);
@@ -545,6 +552,26 @@ export default function StrategistCard() {
     functionName: "pendingHedgeSellSz",
     query: { enabled: isVaultDeployed },
   });
+  const {
+    data: pendingBuyWeiDust,
+    isError: errorPendBuyDust,
+    refetch: refetchPendBuyDust,
+  } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "pendingHedgeBuyWeiDust",
+    query: { enabled: isVaultDeployed },
+  });
+  const {
+    data: pendingSellWeiDust,
+    isError: errorPendSellDust,
+    refetch: refetchPendSellDust,
+  } = useReadContract({
+    address: vaultAddress as `0x${string}`,
+    abi: SOVEREIGN_VAULT_ABI,
+    functionName: "pendingHedgeSellWeiDust",
+    query: { enabled: isVaultDeployed },
+  });
   const { data: hedgeThresh, refetch: refetchHedgeTh } = useReadContract({
     address: vaultAddress as `0x${string}`,
     abi: SOVEREIGN_VAULT_ABI,
@@ -680,6 +707,11 @@ export default function StrategistCard() {
   });
 
   const isLoading = isPending || isConfirming;
+  const effectiveVaultAddress = useMemo(() => {
+    const resolvedVault = (poolVault as string | undefined) ?? "";
+    if (!isZeroAddr(resolvedVault)) return resolvedVault as `0x${string}`;
+    return vaultAddress as `0x${string}`;
+  }, [poolVault, vaultAddress]);
 
   const handleDeposit = async () => {
     if (!userAddress || !depositAmount || !isVaultDeployed) return;
@@ -694,7 +726,7 @@ export default function StrategistCard() {
         address: token.address,
         abi: ERC20_ABI,
         functionName: "transfer",
-        args: [vaultAddress as `0x${string}`, amount],
+        args: [effectiveVaultAddress, amount],
       });
       setTxHash(hash);
     } catch (err) {
@@ -710,7 +742,7 @@ export default function StrategistCard() {
       const amount = parseUnits(allocateAmount, evmUsdcDec);
 
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "allocate",
         args: [targetVault as `0x${string}`, amount],
@@ -729,7 +761,7 @@ export default function StrategistCard() {
       const amount = parseUnits(allocateAmount, evmUsdcDec);
 
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "deallocate",
         args: [targetVault as `0x${string}`, amount],
@@ -748,7 +780,7 @@ export default function StrategistCard() {
       const amount = parseUnits(bridgeAmount, evmUsdcDec);
 
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName:
           bridgeDirection === "toCore" ? "bridgeToCoreOnly" : "bridgeToEvmOnly",
@@ -765,7 +797,7 @@ export default function StrategistCard() {
     try {
       const amount = parseUnits(bootstrapUsdc, evmUsdcDec);
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "bootstrapHyperCoreAccount",
         args: [amount],
@@ -781,7 +813,7 @@ export default function StrategistCard() {
     try {
       const amount = parseUnits(invToCoreAmount, evmBaseDec);
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "bridgeInventoryTokenToCore",
         args: [baseToken.address as `0x${string}`, amount],
@@ -796,7 +828,7 @@ export default function StrategistCard() {
     if (!isVaultDeployed || !hypeFundAmount) return;
     try {
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "fundCoreWithHype",
         value: parseEther(hypeFundAmount),
@@ -811,7 +843,7 @@ export default function StrategistCard() {
     if (!isVaultDeployed) return;
     try {
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "forceFlushHedgeBatch",
       });
@@ -826,7 +858,7 @@ export default function StrategistCard() {
     try {
       const amount = parseUnits(pullPerpMax, evmUsdcDec);
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "pullPerpUsdcToEvm",
         args: [amount],
@@ -847,7 +879,7 @@ export default function StrategistCard() {
           : evmBaseDec;
       const amount = parseUnits(pullCoreMax, dec);
       const hash = await writeContractAsync({
-        address: vaultAddress as `0x${string}`,
+        address: effectiveVaultAddress,
         abi: SOVEREIGN_VAULT_ABI,
         functionName: "pullCoreSpotTokenToEvm",
         args: [token, amount],
@@ -894,6 +926,8 @@ export default function StrategistCard() {
     refetchMinFloor();
     refetchPendBuy();
     refetchPendSell();
+    refetchPendBuyDust();
+    refetchPendSellDust();
     refetchHedgeTh();
     refetchLastLeg();
     refetchMinBootstrap();
@@ -1554,6 +1588,24 @@ export default function StrategistCard() {
                 value={
                   pendingSellSz !== undefined ? String(pendingSellSz) : undefined
                 }
+              />
+              <DataRow
+                label="pendingHedgeBuyWeiDust"
+                value={
+                  pendingBuyWeiDust !== undefined
+                    ? String(pendingBuyWeiDust)
+                    : undefined
+                }
+                isError={errorPendBuyDust}
+              />
+              <DataRow
+                label="pendingHedgeSellWeiDust"
+                value={
+                  pendingSellWeiDust !== undefined
+                    ? String(pendingSellWeiDust)
+                    : undefined
+                }
+                isError={errorPendSellDust}
               />
               <DataRow
                 label="lastHedgeLeg (on-chain IOC leg)"

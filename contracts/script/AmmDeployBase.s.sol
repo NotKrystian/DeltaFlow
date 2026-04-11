@@ -40,6 +40,7 @@ abstract contract AmmDeployBase is Script {
         uint64 spotIndexPURR;
         uint256 rawPxScale;
         bool rawIsPurrPerUsdc;
+        bool usePerpPriceForQuote;
         uint256 baseFeeBips;
         uint256 minFeeBips;
         uint256 maxFeeBips;
@@ -104,6 +105,7 @@ abstract contract AmmDeployBase is Script {
         p.spotIndexPURR = uint64(vm.envUint("SPOT_INDEX_PURR"));
         p.rawIsPurrPerUsdc = vm.envBool("INVERT_PURR_PX");
         p.rawPxScale = vm.envOr("RAW_PX_SCALE", uint256(100_000_000));
+        p.usePerpPriceForQuote = vm.envOr("USE_PERP_PRICE_FOR_QUOTE_PURR", false);
 
         p.dfPerpIndex = uint32(vm.envOr("PERP_INDEX_PURR", uint256(type(uint32).max)));
         p.dfSpotAssetBbo = uint32(vm.envOr("SPOT_ASSET_BBO_PURR", uint256(0)));
@@ -118,6 +120,7 @@ abstract contract AmmDeployBase is Script {
         w.spotIndexPURR = uint64(vm.envUint("SPOT_INDEX_WETH"));
         w.rawIsPurrPerUsdc = vm.envBool("INVERT_WETH_PX");
         w.rawPxScale = vm.envOr("RAW_PX_SCALE_WETH", common.rawPxScale);
+        w.usePerpPriceForQuote = vm.envOr("USE_PERP_PRICE_FOR_QUOTE_WETH", false);
 
         w.dfPerpIndex = uint32(vm.envOr("PERP_INDEX_WETH", uint256(type(uint32).max)));
         w.dfSpotAssetBbo = uint32(vm.envOr("SPOT_ASSET_BBO_WETH", uint256(0)));
@@ -132,6 +135,7 @@ abstract contract AmmDeployBase is Script {
         p.spotIndexPURR = uint64(vm.envUint("SPOT_INDEX_WETH"));
         p.rawIsPurrPerUsdc = vm.envBool("INVERT_WETH_PX");
         p.rawPxScale = vm.envOr("RAW_PX_SCALE_WETH", vm.envOr("RAW_PX_SCALE", uint256(100_000_000)));
+        p.usePerpPriceForQuote = vm.envOr("USE_PERP_PRICE_FOR_QUOTE_WETH", false);
 
         p.dfPerpIndex = uint32(vm.envOr("PERP_INDEX_WETH", uint256(type(uint32).max)));
         p.dfSpotAssetBbo = uint32(vm.envOr("SPOT_ASSET_BBO_WETH", uint256(0)));
@@ -275,6 +279,10 @@ abstract contract AmmDeployBase is Script {
         console2.log("USDC:", p.usdc);
         console2.log("Spot index:", p.spotIndexPURR);
         console2.log("RAW_PX_SCALE:", p.rawPxScale);
+        console2.log("ALM uses perp mark quote:", p.usePerpPriceForQuote);
+        if (p.usePerpPriceForQuote) {
+            console2.log("ALM perp index:", p.dfPerpIndex);
+        }
         console2.log("SovereignVault (existing):", address(vault));
 
         address strategist = vm.envOr("STRATEGIST", p.deployer);
@@ -298,6 +306,8 @@ abstract contract AmmDeployBase is Script {
             p.spotIndexPURR,
             p.rawPxScale,
             p.rawIsPurrPerUsdc,
+            p.usePerpPriceForQuote,
+            p.dfPerpIndex,
             p.liquidityBufferBps
         );
         console2.log("SovereignALM:", address(alm));

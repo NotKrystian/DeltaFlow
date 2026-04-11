@@ -30,6 +30,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     address public immutable purr;
     uint8 public immutable usdcDec;
     uint8 public immutable purrDec;
+    address public foundation;
 
     address public defaultVault;
     uint256 totalAllocatedUSDC;
@@ -66,6 +67,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     error PerpIndexTooLarge();
     error BootstrapAmountTooSmall(uint256 minAmount, uint256 got);
     error ZeroAmount();
+    error FoundationZeroAddress();
 
     event LiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 purrAmount, uint256 shares);
     event LiquidityRemoved(address indexed provider, uint256 usdcOut, uint256 purrOut, uint256 shares);
@@ -79,6 +81,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     /// @notice Emitted when a batch IOC is sent (one or many swaps combined).
     event HedgeBatchExecuted(uint32 indexed perpAsset, bool indexed buyPerp, uint256 totalSz);
     event HypeBridgedToCore(uint256 weiAmount);
+    event FoundationSet(address indexed foundation);
+    event FoundationFeeLpMinted(address indexed feeToken, uint256 feeAmount, uint256 mintedShares);
 
     /// @notice Last perp hedge leg from `_netHedgePosition` (mirrors memo unwind vs open; fee module uses balance-sheet `unwind` blend separately).
     ///         0=None, 1=OpenOnly, 2=UnwindOnly (reduce-only), 3=UnwindThenOpen.
@@ -107,6 +111,10 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     /// @notice Pending hedge size (HL `sz`) for short-perp hedges (vault received PURR on swaps).
     uint256 public pendingHedgeSellSz;
 
+    /// @notice Sub-`sz` base-wei remainder carried forward so tiny swaps accumulate into future hedge `sz`.
+    uint256 public pendingHedgeBuyWeiDust;
+    uint256 public pendingHedgeSellWeiDust;
+
     /// @dev Swap outputs waiting for a hedge batch when batching is on and the hedge bucket is still below threshold.
     struct HedgePayout {
         address recipient;
@@ -122,6 +130,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
     constructor(address _usdc, address _purr) ERC20("DeltaFlow LP", "DFLP") {
         strategist = msg.sender;
+        foundation = msg.sender;
         defaultVault = 0xa15099a30BBf2e68942d6F4c43d70D04FAEab0A0; // HLP
         usdc = _usdc;
         purr = _purr;
@@ -147,6 +156,13 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     ///         Called once by the strategist after the ALM is deployed and wired to the pool.
     function setALM(address _alm) external onlyStrategist {
         alm = _alm;
+    }
+
+    /// @notice Update fee recipient for swap-fee LP share mints.
+    function setFoundation(address _foundation) external onlyStrategist {
+        if (_foundation == address(0)) revert FoundationZeroAddress();
+        foundation = _foundation;
+        emit FoundationSet(_foundation);
     }
 
     /// @notice Sets the perp used to hedge inventory from swaps. Set to 0 to disable on-chain hedging.
@@ -203,29 +219,65 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         return Math.mulDiv(uint256(sz), px, factor, Math.Rounding.Ceil);
     }
 
-    /// @dev Bridge vault USDC to HyperCore spot, move it to perp via `transferUsdClass`, then the IOC can consume margin in the same tx.
-    function _bridgeUsdcSpotToPerpForHedge(uint256 usdcEvmAmount) internal {
+    /// @dev Convert base token amount in Core `wei` to perp `sz` using perp `szDecimals` (not spot token sz decimals).
+    function _baseWeiToPerpSz(uint32 perpIx, uint64 baseTokenIx, uint64 amountWei) internal view returns (uint64) {
+        if (amountWei == 0) return 0;
+        uint8 weiDec = PrecompileLib.tokenInfo(uint32(baseTokenIx)).weiDecimals;
+        uint8 perpSzDec = PrecompileLib.perpAssetInfo(perpIx).szDecimals;
+        if (weiDec >= perpSzDec) {
+            return amountWei / uint64(10 ** uint256(weiDec - perpSzDec));
+        }
+        uint256 up = uint256(amountWei) * (10 ** uint256(perpSzDec - weiDec));
+        if (up > type(uint64).max) return type(uint64).max;
+        return uint64(up);
+    }
+
+    /// @dev Convert perp `sz` back to base token Core `wei` at the same decimal bridge used in `_baseWeiToPerpSz`.
+    function _perpSzToBaseWei(uint32 perpIx, uint64 baseTokenIx, uint64 sz) internal view returns (uint64) {
+        if (sz == 0) return 0;
+        uint8 weiDec = PrecompileLib.tokenInfo(uint32(baseTokenIx)).weiDecimals;
+        uint8 perpSzDec = PrecompileLib.perpAssetInfo(perpIx).szDecimals;
+        if (weiDec >= perpSzDec) {
+            uint256 up = uint256(sz) * (10 ** uint256(weiDec - perpSzDec));
+            if (up > type(uint64).max) return type(uint64).max;
+            return uint64(up);
+        }
+        return sz / uint64(10 ** uint256(perpSzDec - weiDec));
+    }
+
+    /// @dev Ensure required USDC notional is available in perp class.
+    ///      Uses existing Core spot USDC first, bridges only the shortfall from EVM, then `transferUsdClass`.
+    function _bridgeUsdcSpotToPerpForHedge(uint256 usdcEvmAmount, uint256 usdcFeeProtected) internal {
         if (usdcEvmAmount == 0) return;
+        uint64 reqCoreWei = HLConversions.evmToWei(usdc, usdcEvmAmount);
+        uint64 reqPerpNtl = HLConversions.weiToPerp(reqCoreWei);
+        if (reqPerpNtl == 0) revert HedgePerpNtlDust();
 
-        uint256 bal = IERC20(usdc).balanceOf(address(this));
-        if (bal < usdcEvmAmount) revert InsufficientUSDCForHedge(usdcEvmAmount, bal);
+        // Available Core spot USDC for this vault address.
+        uint64 spotWei = PrecompileLib.spotBalance(address(this), 0).total;
+        uint64 spotPerpNtl = HLConversions.weiToPerp(spotWei);
 
-        CoreWriterLib.bridgeToCore(usdc, usdcEvmAmount);
+        if (spotPerpNtl < reqPerpNtl) {
+            uint64 shortPerpNtl = reqPerpNtl - spotPerpNtl;
+            uint64 shortCoreWei = HLConversions.perpToWei(shortPerpNtl);
+            uint256 shortEvm = HLConversions.weiToEvm(usdc, shortCoreWei);
 
-        uint64 coreWei = HLConversions.evmToWei(usdc, usdcEvmAmount);
-        uint64 perpNtl = HLConversions.weiToPerp(coreWei);
-        if (perpNtl == 0) revert HedgePerpNtlDust();
+            uint256 bal = IERC20(usdc).balanceOf(address(this));
+            uint256 spendable = bal > usdcFeeProtected ? bal - usdcFeeProtected : 0;
+            if (spendable < shortEvm) revert InsufficientUSDCForHedge(shortEvm, spendable);
+            CoreWriterLib.bridgeToCore(usdc, shortEvm);
+        }
 
-        CoreWriterLib.transferUsdClass(perpNtl, true);
+        CoreWriterLib.transferUsdClass(reqPerpNtl, true);
     }
 
     /// @param reduceOnly When true, closing against an existing perp position — skip fresh USDC bridge; margin comes from Core.
-    function _placePerpIoc(uint32 perpIx, bool isBuy, uint64 sz, bool reduceOnly) internal {
+    function _placePerpIoc(uint32 perpIx, bool isBuy, uint64 sz, bool reduceOnly, uint256 usdcFeeProtected) internal {
         if (sz == 0) return;
 
         if (!reduceOnly) {
             uint256 usdcNeed = _notionalUsdcEvmForSz(perpIx, sz);
-            _bridgeUsdcSpotToPerpForHedge(usdcNeed);
+            _bridgeUsdcSpotToPerpForHedge(usdcNeed, usdcFeeProtected);
         }
 
         uint64 limitPx = isBuy ? type(uint64).max : 0;
@@ -242,7 +294,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     }
 
     /// @notice Applies incremental hedge `sz` against live Core perp position: closes the opposing leg with reduce-only IOCs first, then opens the remainder.
-    function _netHedgePosition(uint32 perpIx, bool isBuy, uint64 sz) internal {
+    function _netHedgePosition(uint32 perpIx, bool isBuy, uint64 sz, uint256 usdcFeeProtected) internal {
         if (sz == 0) return;
         if (perpIx > type(uint16).max) revert PerpIndexTooLarge();
         int64 pos = PrecompileLib.position(address(this), uint16(perpIx)).szi;
@@ -251,16 +303,16 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         if (isBuy) {
             if (pos >= 0) {
-                _placePerpIoc(perpIx, true, sz, false);
+                _placePerpIoc(perpIx, true, sz, false, usdcFeeProtected);
                 leg = 1;
             } else {
                 uint64 shortAbs = uint64(uint256(-int256(pos)));
                 uint64 closePart = sz < shortAbs ? sz : shortAbs;
                 if (closePart > 0) {
-                    _placePerpIoc(perpIx, true, closePart, true);
+                    _placePerpIoc(perpIx, true, closePart, true, 0);
                 }
                 if (sz > closePart) {
-                    _placePerpIoc(perpIx, true, sz - closePart, false);
+                    _placePerpIoc(perpIx, true, sz - closePart, false, usdcFeeProtected);
                     leg = 3;
                 } else {
                     leg = 2;
@@ -268,16 +320,16 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             }
         } else {
             if (pos <= 0) {
-                _placePerpIoc(perpIx, false, sz, false);
+                _placePerpIoc(perpIx, false, sz, false, usdcFeeProtected);
                 leg = 1;
             } else {
                 uint64 longAbs = uint64(uint256(int256(pos)));
                 uint64 closePart = sz < longAbs ? sz : longAbs;
                 if (closePart > 0) {
-                    _placePerpIoc(perpIx, false, closePart, true);
+                    _placePerpIoc(perpIx, false, closePart, true, 0);
                 }
                 if (sz > closePart) {
-                    _placePerpIoc(perpIx, false, sz - closePart, false);
+                    _placePerpIoc(perpIx, false, sz - closePart, false, usdcFeeProtected);
                     leg = 3;
                 } else {
                     leg = 2;
@@ -319,7 +371,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 batch = pendingHedgeBuySz;
         pendingHedgeBuySz = 0;
         if (batch > type(uint64).max) revert HedgeBatchTooLarge();
-        _netHedgePosition(perpIx, true, uint64(batch));
+        _netHedgePosition(perpIx, true, uint64(batch), 0);
         emit HedgeBatchExecuted(perpIx, true, batch);
         uint256 n = _pendingPayoutsBuy.length;
         for (uint256 i = 0; i < n; i++) {
@@ -333,7 +385,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 batch = pendingHedgeSellSz;
         pendingHedgeSellSz = 0;
         if (batch > type(uint64).max) revert HedgeBatchTooLarge();
-        _netHedgePosition(perpIx, false, uint64(batch));
+        _netHedgePosition(perpIx, false, uint64(batch), 0);
         emit HedgeBatchExecuted(perpIx, false, batch);
         uint256 n = _pendingPayoutsSell.length;
         for (uint256 i = 0; i < n; i++) {
@@ -397,6 +449,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     function processSwapHedge(
         bool vaultPurrOut,
         uint256 purrAmountWei,
+        uint256 usdcFeeProtected,
         address swapTokenOut,
         address recipient,
         uint256 amountOut
@@ -406,10 +459,18 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         uint64 tokenIdx = PrecompileLib.getTokenIndex(purr);
         uint64 weiAmt = HLConversions.evmToWei(tokenIdx, purrAmountWei);
-        uint64 sz = HLConversions.weiToSz(tokenIdx, weiAmt);
-        if (sz == 0) return true;
-
         bool isBuy = vaultPurrOut;
+        uint256 priorDust = isBuy ? pendingHedgeBuyWeiDust : pendingHedgeSellWeiDust;
+        uint256 totalWei = uint256(weiAmt) + priorDust;
+        uint64 sz = _baseWeiToPerpSz(perpIx, tokenIdx, totalWei > type(uint64).max ? type(uint64).max : uint64(totalWei));
+        uint64 consumedWei = _perpSzToBaseWei(perpIx, tokenIdx, sz);
+        uint256 nextDust = totalWei > uint256(consumedWei) ? (totalWei - uint256(consumedWei)) : 0;
+        if (isBuy) {
+            pendingHedgeBuyWeiDust = nextDust;
+        } else {
+            pendingHedgeSellWeiDust = nextDust;
+        }
+        if (sz == 0) return true;
 
         // If dynamic threshold dropped (e.g. mark moved), flush older queued hedges before this swap’s slice.
         if (_hedgeBatching()) {
@@ -423,7 +484,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         }
 
         if (!_hedgeBatching()) {
-            _netHedgePosition(perpIx, isBuy, sz);
+            _netHedgePosition(perpIx, isBuy, sz, usdcFeeProtected);
             if (swapTokenOut == usdc) {
                 _topUpVaultUsdcFromPerpForAmount(amountOut);
             } else {
@@ -492,6 +553,37 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         return _pendingPayoutsSell.length;
     }
 
+    function _feeTokenValueInUsdc(address feeToken, uint256 feeAmount, uint256 spotPrice) internal view returns (uint256) {
+        if (feeToken == usdc) return feeAmount;
+        if (feeToken == purr) return Math.mulDiv(feeAmount, spotPrice, 10 ** uint256(purrDec));
+        return 0;
+    }
+
+    /// @inheritdoc ISovereignVaultMinimal
+    function creditSwapFeeToFoundation(address feeToken, uint256 feeAmount) external onlyAuthorizedPool {
+        if (feeAmount == 0) return;
+        address foundationAddr = foundation;
+        if (foundationAddr == address(0)) return;
+
+        uint256 supply = totalSupply();
+        if (supply == 0) return;
+
+        if (alm == address(0)) return;
+        uint256 spotPrice = ISpotPricer(alm).getSpotPriceUsdcPerBase();
+
+        (uint256 reserveUsdc, uint256 reservePurr) = getReserves();
+        uint256 poolValueUsdc = reserveUsdc + Math.mulDiv(reservePurr, spotPrice, 10 ** uint256(purrDec));
+        uint256 feeValueUsdc = _feeTokenValueInUsdc(feeToken, feeAmount, spotPrice);
+        if (feeValueUsdc == 0 || poolValueUsdc <= feeValueUsdc) return;
+
+        // Fee tokens are already present in reserves; mint shares against pre-fee value.
+        uint256 shares = Math.mulDiv(feeValueUsdc, supply, poolValueUsdc - feeValueUsdc);
+        if (shares == 0) return;
+
+        _mint(foundationAddr, shares);
+        emit FoundationFeeLpMinted(feeToken, feeAmount, shares);
+    }
+
     /// @notice Runs batched hedge IOCs and pays escrowed `tokenOut`s even when below the normal min-`sz` threshold (same as a full batch flush).
     function forceFlushHedgeBatch() external nonReentrant {
         uint32 perpIx = hedgePerpAssetIndex;
@@ -528,7 +620,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     }
 
     // Interface required function - returns total reserves (internal + external)
-    function getReservesForPool(address _pool, address[] calldata _tokens) external view returns (uint256[] memory) {
+    function getReservesForPool(address, address[] calldata _tokens) external view returns (uint256[] memory) {
         PrecompileLib.SpotBalance memory externalUSDCReserves = PrecompileLib.spotBalance(address(this), 0);
         uint256 usdcSpotTotal = externalUSDCReserves.total;
         uint256 spotToEvm = HLConversions.perpToWei(uint64(usdcSpotTotal));

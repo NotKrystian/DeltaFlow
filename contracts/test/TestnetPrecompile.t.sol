@@ -29,7 +29,7 @@ contract TestnetPrecompileTest is Test {
     }
 
     /// @notice Check HYPE token info (index 150 is typically HYPE)
-    function test_hypeTokenInfo() public {
+    function test_hypeTokenInfo() public view {
         try this.getTokenInfo(150) returns (PrecompileLib.TokenInfo memory info) {
             console.log("Token 150 name:", info.name);
             console.log("Token 150 weiDecimals:", info.weiDecimals);
@@ -39,7 +39,7 @@ contract TestnetPrecompileTest is Test {
     }
 
     /// @notice Try to find available spot markets
-    function test_spotInfo() public {
+    function test_spotInfo() public view {
         // Try spot index 0
         try this.getSpotInfo(0) returns (PrecompileLib.SpotInfo memory info) {
             console.log("Spot 0 name:", info.name);
@@ -64,7 +64,7 @@ contract TestnetPrecompileTest is Test {
     }
 
     /// @notice Check spot price for index 0
-    function test_spotPrice() public {
+    function test_spotPrice() public view {
         try this.getSpotPx(0) returns (uint64 price) {
             console.log("Spot 0 price:", price);
         } catch {

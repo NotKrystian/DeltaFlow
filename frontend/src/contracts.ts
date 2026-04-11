@@ -1078,6 +1078,20 @@ export const SOVEREIGN_VAULT_ABI = [
     outputs: [{ name: "", type: "uint256" }],
   },
   {
+    name: "pendingHedgeBuyWeiDust",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "pendingHedgeSellWeiDust",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
     name: "hedgeSzThreshold",
     type: "function",
     stateMutability: "view",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   useAccount,
   usePublicClient,
@@ -50,6 +50,7 @@ function Stat({
 
 export default function LpProviderDashboard() {
   const { address, isConnected } = useAccount();
+  const [isHydrated, setIsHydrated] = useState(false);
   const { market } = useMarket();
   const vault = market.vault;
   const baseTok = market.tokens.BASE;
@@ -125,6 +126,11 @@ export default function LpProviderDashboard() {
   });
 
   const busy = isPending || confirming;
+  const isConnectedSafe = isHydrated ? isConnected : false;
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
 
   const needsUsdcApprove =
     depUsdcParsed > 0n &&
@@ -234,7 +240,7 @@ export default function LpProviderDashboard() {
           value={
             userShares && userShares > 0n
               ? formatShares(userShares)
-              : isConnected
+              : isConnectedSafe
                 ? "0"
                 : "—"
           }
@@ -249,7 +255,7 @@ export default function LpProviderDashboard() {
           value={
             userValueUsdc !== undefined
               ? formatUsdc(userValueUsdc)
-              : isConnected
+              : isConnectedSafe
                 ? "0.00"
                 : "—"
           }
@@ -281,7 +287,7 @@ export default function LpProviderDashboard() {
         </p>
       </div>
 
-      {!isConnected ? (
+      {!isConnectedSafe ? (
         <div className="rounded-3xl border border-[var(--border)] bg-[var(--card)] p-10 text-center text-[var(--text-muted)]">
           Connect a wallet to deposit or withdraw LP.
         </div>

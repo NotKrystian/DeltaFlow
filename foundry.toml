@@ -23,7 +23,8 @@ cbor_metadata = false
 optimizer_runs = 1
 
 # Exclude certora + mocks that cause missing file issues
-ignored_error_codes = []
+# Suppress non-actionable third-party simulator warnings from hyper-evm-lib test helpers.
+ignored_error_codes = [5667, 2072]
 fs_permissions = [{ access = "read", path = "./" }]
 
 # IMPORTANT: ignore these directories
@@ -33,3 +34,6 @@ skip = [
   "lib/**/certora/**",
   "lib/**/mocks/**",
 ]
+
+[lint]
+lint_on_build = false

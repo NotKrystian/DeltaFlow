@@ -265,7 +265,7 @@ library CoreSimulatorLib {
 
     ///// VIEW AND PURE /////////
 
-    function isSystemAddress(address emitter, address addr) internal view returns (bool) {
+    function isSystemAddress(address, address addr) internal view returns (bool) {
 
         // Check if it's a token system address (0x2000...0000 + index)
         uint160 baseAddr = uint160(0x2000000000000000000000000000000000000000);

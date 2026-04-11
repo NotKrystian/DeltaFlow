@@ -37,6 +37,11 @@ contract SovereignALM is ISovereignALM {
     /// If false, raw precompile price is USDC per 1 PURR (normal).
     bool public immutable rawIsPurrPerUsdc;
 
+    /// @dev If true, quote price comes from perp mark (`normalizedMarkPx`) instead of spot index.
+    bool public immutable usePerpPriceForQuote;
+    /// @dev Hyperliquid perp universe index used when `usePerpPriceForQuote=true`.
+    uint32 public immutable perpIndexForQuote;
+
     /// @dev Extra buffer for vault payout check (bps). Example: 50 = 0.50%.
     uint256 public immutable liquidityBufferBps;
 
@@ -57,6 +62,8 @@ contract SovereignALM is ISovereignALM {
         uint64 _spotIndexPURR,
         uint256 _rawPxScale,
         bool _rawIsPurrPerUsdc,
+        bool _usePerpPriceForQuote,
+        uint32 _perpIndexForQuote,
         uint256 _liquidityBufferBps
     ) {
         require(_pool != address(0), "POOL_0");
@@ -75,6 +82,11 @@ contract SovereignALM is ISovereignALM {
         spotIndexPURR = _spotIndexPURR;
         rawPxScale = _rawPxScale;
         rawIsPurrPerUsdc = _rawIsPurrPerUsdc;
+        usePerpPriceForQuote = _usePerpPriceForQuote;
+        perpIndexForQuote = _perpIndexForQuote;
+        if (_usePerpPriceForQuote) {
+            require(_perpIndexForQuote != 0, "PERP_INDEX_0");
+        }
         liquidityBufferBps = _liquidityBufferBps;
     }
 
@@ -85,6 +97,16 @@ contract SovereignALM is ISovereignALM {
 
     /// @notice Returns canonical USDC-per-base price scaled to USDC decimals.
     function getSpotPriceUsdcPerBase() public view returns (uint256 pxUsdcPerBase) {
+        if (usePerpPriceForQuote) {
+            // normalizedMarkPx is USD-like with 1e6 precision on HL precompiles.
+            uint256 rawMark = PrecompileLib.normalizedMarkPx(perpIndexForQuote);
+            if (rawMark == 0) revert SovereignALM__ZeroPrice();
+            uint256 usdcScale = 10 ** uint256(usdcDec);
+            pxUsdcPerBase = Math.mulDiv(rawMark, usdcScale, 1_000_000);
+            if (pxUsdcPerBase == 0) revert SovereignALM__ZeroPrice();
+            return pxUsdcPerBase;
+        }
+
         uint256 raw = PrecompileLib.normalizedSpotPx(spotIndexPURR);
         if (raw == 0) revert SovereignALM__ZeroPrice();
 

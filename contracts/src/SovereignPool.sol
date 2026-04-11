@@ -5,7 +5,6 @@ import {Math} from "../lib/openzeppelin-contracts/contracts/utils/math/Math.sol"
 import {IERC20} from "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "../lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 
-import {Constants} from "./utils/Constants.sol";
 import {ReentrancyGuard} from "./utils/ReentrancyGuard.sol";
 import {ISwapFeeModule, SwapFeeModuleData} from "./swap-fee-modules/interfaces/ISwapFeeModule.sol";
 import {ISovereignPool} from "./interfaces/ISovereignPool.sol";
@@ -804,6 +803,10 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
             _swapParams.swapContext.swapCallbackContext
         );
 
+        if (vault != address(this) && effectiveFee > 0) {
+            ISovereignVaultMinimal(vault).creditSwapFeeToFoundation(address(swapCache.tokenInPool), effectiveFee);
+        }
+
         // Update internal state and oracle module.
         // In case of rebase tokens, `amountInUsed` and `amountOut` might not match
         // the exact balance deltas due to rounding errors.
@@ -828,8 +831,12 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
                 purrWei = liquidityQuote.amountInFilled;
             }
             if (purrWei > 0) {
+                uint256 usdcFeeProtected = 0;
+                if (address(swapCache.tokenInPool) == usdcToken) {
+                    usdcFeeProtected = effectiveFee;
+                }
                 poolShouldSendTokenOut = ISovereignVaultMinimal(vault).processSwapHedge(
-                    vaultPurrOut, purrWei, _swapParams.swapTokenOut, _swapParams.recipient, amountOut
+                    vaultPurrOut, purrWei, usdcFeeProtected, _swapParams.swapTokenOut, _swapParams.recipient, amountOut
                 );
             }
         }

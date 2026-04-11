@@ -4,6 +4,7 @@ pragma solidity ^0.8.19;
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {HLConversions} from "@hyper-evm-lib/src/common/HLConversions.sol";
+import {PrecompileLib} from "@hyper-evm-lib/src/PrecompileLib.sol";
 
 import {ISwapFeeModule, SwapFeeModuleData} from "../swap-fee-modules/interfaces/ISwapFeeModule.sol";
 
@@ -140,8 +141,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
 
         // Net trade size for hedge `sz` delta (10 bps conservative seed → amountInNet).
         uint256 amountInNet = Math.mulDiv(amountIn, BIPS, BIPS + 10);
-        int256 deltaSz =
-            _estimatePerpDeltaSz(tokenIn, tokenOut, amountInNet, px, usdcDec, baseDec);
+        int256 deltaSz = _estimatePerpDeltaSz(tokenIn, tokenOut, amountInNet, px, baseDec);
 
         DeltaFlowFeeMath.FeeParams memory p = feeParams;
 
@@ -198,22 +198,34 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         address tokenOut,
         uint256 amountInNet,
         uint256 px,
-        uint8 usdcDec,
         uint8 baseDec
     ) internal view returns (int256) {
         if (tokenIn == usdc && tokenOut == base) {
             uint256 outWei = Math.mulDiv(amountInNet, 10 ** uint256(baseDec), px);
             if (outWei == 0) return 0;
-            if (outWei > type(uint64).max) outWei = type(uint64).max;
-            uint64 sz = HLConversions.weiToSz(base, uint64(outWei));
+            uint64 sz = _baseWeiToPerpSz(outWei);
             return int256(uint256(sz));
         }
         if (tokenIn == base && tokenOut == usdc) {
-            uint256 a = amountInNet > type(uint64).max ? type(uint64).max : amountInNet;
-            uint64 sz = HLConversions.weiToSz(base, uint64(a));
+            uint64 sz = _baseWeiToPerpSz(amountInNet);
             return -int256(uint256(sz));
         }
         return 0;
+    }
+
+    /// @dev Convert base amount in EVM wei to perp sz using perp asset `szDecimals`.
+    function _baseWeiToPerpSz(uint256 baseAmountWei) internal view returns (uint64) {
+        if (baseAmountWei == 0) return 0;
+        uint64 tokenIx = PrecompileLib.getTokenIndex(base);
+        uint8 weiDec = PrecompileLib.tokenInfo(uint32(tokenIx)).weiDecimals;
+        uint8 perpSzDec = PrecompileLib.perpAssetInfo(perpIndex).szDecimals;
+        uint64 coreWei = HLConversions.evmToWei(tokenIx, baseAmountWei);
+        if (weiDec >= perpSzDec) {
+            return coreWei / uint64(10 ** uint256(weiDec - perpSzDec));
+        }
+        uint256 up = uint256(coreWei) * (10 ** uint256(perpSzDec - weiDec));
+        if (up > type(uint64).max) return type(uint64).max;
+        return uint64(up);
     }
 
     /// @dev Testnet-friendly dynamic curve: fee expands exponentially with post-trade concentration and

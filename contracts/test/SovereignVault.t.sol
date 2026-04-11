@@ -146,18 +146,18 @@ contract SovereignVaultTest is Test {
 
     function test_processSwapHedge_noopWhenDisabled() public {
         vm.prank(address(pool));
-        assertTrue(vault.processSwapHedge(true, 1e5, address(purr), address(this), 1e5));
+        assertTrue(vault.processSwapHedge(true, 1e5, 0, address(purr), address(this), 1e5));
     }
 
     function test_processSwapHedge_noopWhenZeroAmount() public {
         vault.setHedgePerpAsset(1);
         vm.prank(address(pool));
-        assertTrue(vault.processSwapHedge(true, 0, address(purr), address(this), 0));
+        assertTrue(vault.processSwapHedge(true, 0, 0, address(purr), address(this), 0));
     }
 
     function test_processSwapHedge_onlyAuthorizedPool() public {
         vm.expectRevert(SovereignVault.OnlyAuthorizedPool.selector);
-        vault.processSwapHedge(true, 1e5, address(purr), address(this), 1e5);
+        vault.processSwapHedge(true, 1e5, 0, address(purr), address(this), 1e5);
     }
 
     function test_setHedgePerpAsset_onlyStrategist() public {
@@ -612,6 +612,99 @@ contract VaultDeallocateTest is Test {
         vm.prank(user);
         vm.expectRevert(SovereignVault.OnlyStrategist.selector);
         vault.deallocate(TEST_VAULT, 100e6);
+    }
+}
+
+/// @notice Hedging threshold behavior on testnet assets/perp indices:
+///         below threshold queues, above threshold flushes + executes IOC hedge.
+contract HedgeThresholdBehaviorTest is Test {
+    using HLConversions for *;
+
+    address internal constant PURR_EVM = 0xa9056c15938f9aff34CD497c722Ce33dB0C2fD57;
+    uint32 internal constant PURR_PERP_INDEX = 125;
+
+    HyperCore public hyperCore;
+    SovereignVault public vault;
+    MockPool public pool;
+    address public usdcAddress;
+
+    function setUp() public {
+        string memory alchemyRpc = "https://hyperliquid-testnet.g.alchemy.com/v2/uSFYHvKqoVOUFsNnbGM7sL_EWO0tf4iS";
+        vm.createSelectFork(alchemyRpc);
+        hyperCore = CoreSimulatorLib.init();
+
+        usdcAddress = HLConstants.usdc();
+        vault = new SovereignVault(usdcAddress, PURR_EVM);
+        CoreSimulatorLib.forceAccountActivation(address(vault));
+
+        pool = new MockPool(PURR_EVM, usdcAddress);
+        vault.setAuthorizedPool(address(pool), true);
+        vault.setHedgePerpAsset(PURR_PERP_INDEX);
+        vault.setUseMarkBasedMinHedgeSz(true);
+        vault.setMinPerpHedgeSz(0);
+
+        // Hedge path can bridge margin from vault EVM USDC.
+        deal(usdcAddress, address(vault), 10_000e6);
+    }
+
+    function _purrEvmWeiFromPerpSz(uint64 sz) internal view returns (uint256) {
+        uint64 tokenIx = PrecompileLib.getTokenIndex(PURR_EVM);
+        uint8 weiDec = PrecompileLib.tokenInfo(uint32(tokenIx)).weiDecimals;
+        uint8 perpSzDec = PrecompileLib.perpAssetInfo(PURR_PERP_INDEX).szDecimals;
+
+        uint64 coreWei;
+        if (weiDec >= perpSzDec) {
+            coreWei = sz * uint64(10 ** uint256(weiDec - perpSzDec));
+        } else {
+            // Defensive: keep test conversions in range.
+            uint256 up = uint256(sz) / (10 ** uint256(perpSzDec - weiDec));
+            coreWei = up > type(uint64).max ? type(uint64).max : uint64(up);
+        }
+        return HLConversions.weiToEvm(tokenIx, coreWei);
+    }
+
+    function test_underThreshold_queues() public {
+        uint256 thresh = vault.hedgeSzThreshold();
+        assertGt(thresh, 1, "threshold should be >1 sz");
+        uint64 below = uint64(thresh - 1);
+        uint256 purrAmountWei = _purrEvmWeiFromPerpSz(below);
+        assertGt(purrAmountWei, 0, "converted amount should be nonzero");
+
+        vm.prank(address(pool));
+        bool poolShouldSend = vault.processSwapHedge(
+            true, // vault paid PURR out -> buy perp hedge side
+            purrAmountWei,
+            0,
+            usdcAddress,
+            address(this),
+            0
+        );
+
+        assertFalse(poolShouldSend, "queued payout path should return false");
+        assertEq(vault.pendingHedgeBuySz(), uint256(below), "below-threshold sz should be queued");
+        assertEq(vault.pendingHedgeSellSz(), 0);
+    }
+
+    function test_aboveThreshold_executesAndFlushes() public {
+        uint256 thresh = vault.hedgeSzThreshold();
+        uint64 above = uint64(thresh + 1);
+        uint256 purrAmountWei = _purrEvmWeiFromPerpSz(above);
+        assertGt(purrAmountWei, 0, "converted amount should be nonzero");
+
+        vm.prank(address(pool));
+        bool poolShouldSend = vault.processSwapHedge(
+            true, // vault paid PURR out -> buy perp hedge side
+            purrAmountWei,
+            0,
+            usdcAddress,
+            address(this),
+            0
+        );
+
+        assertFalse(poolShouldSend, "batching path returns false (vault pays out)");
+        assertEq(vault.pendingHedgeBuySz(), 0, "queue should flush at/above threshold");
+        assertEq(vault.pendingHedgeSellSz(), 0);
+        assertEq(vault.lastHedgeLeg(), 1, "expected open-only hedge leg");
     }
 }
 
