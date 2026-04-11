@@ -97,6 +97,7 @@ library DeltaFeeHelper {
         DeltaFlowFeeMath.FeeParams memory p,
         uint256 tradeNotionalWad,
         bool volatileRegime,
+        bool useMarketRiskComponent,
         uint256 absHPostSz,
         uint256 hMaxSz,
         uint256 poolNavWad
@@ -111,9 +112,11 @@ library DeltaFeeHelper {
         uint256 basis = Math.min(p.basisMaxBps, 5);
         uint256 funding = Math.min(p.fundingCapBps, 3);
 
-        uint256 q = s.navWad == 0 ? 0 : Math.mulDiv(s.shortfallWad, WAD, s.navWad);
-        uint256 exhaust = Math.mulDiv(p.exhaustLinearWad, q, WAD)
+        uint256 q = s.navWad == 0 ? 0 : Math.min(WAD, Math.mulDiv(s.shortfallWad, WAD, s.navWad));
+        // Exhaustion coefficients are WAD-scaled; convert to bips before summing with fee components.
+        uint256 exhaustWad = Math.mulDiv(p.exhaustLinearWad, q, WAD)
             + Math.mulDiv(p.exhaustQuadWad, Math.mulDiv(q, q, WAD), WAD);
+        uint256 exhaust = exhaustWad / WAD;
 
         uint256 skewUtil = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absHPostSz, WAD, hMaxSz));
         uint256 navDenom = poolNavWad == 0 ? (s.navWad == 0 ? WAD : s.navWad) : poolNavWad;
@@ -135,9 +138,11 @@ library DeltaFeeHelper {
         }
 
         uint256 safety = p.safetyBaseBps;
-        if (volatileRegime) safety += 3;
-        if (s.spreadBps > 30) safety += 5;
-        if (s.spreadBps > 50) safety += 10;
+        if (useMarketRiskComponent) {
+            if (volatileRegime) safety += 3;
+            if (s.spreadBps > 30) safety += 5;
+            if (s.spreadBps > 50) safety += 10;
+        }
 
         feeBps = exec + impact + delay + basis + funding + exhaust + invSkew + exhaustionKnee + safety;
     }
@@ -148,6 +153,7 @@ library DeltaFeeHelper {
         DeltaFlowFeeMath.FeeParams memory p,
         uint256 tradeNotionalWad,
         bool volatileRegime,
+        bool useMarketRiskComponent,
         int256 perpPre,
         int256 deltaSz,
         uint256 hMaxSz,
@@ -168,10 +174,11 @@ library DeltaFeeHelper {
 
         uint256 unwindBps = unwindFeeBpsIntegral(utilPre, utilPost);
 
-        uint256 nr = newRiskFeeBpsHtml(s, p, tradeNotionalWad, volatileRegime, absPost, hMaxSz, poolNavWad);
-        uint256 nrClamped = Math.min(60, Math.max(10, nr));
+        uint256 nr = newRiskFeeBpsHtml(
+            s, p, tradeNotionalWad, volatileRegime, useMarketRiskComponent, absPost, hMaxSz, poolNavWad
+        );
+        uint256 nrClamped = Math.max(10, nr);
 
         rawBps = Math.mulDiv(unwindFrac, unwindBps, WAD) + Math.mulDiv(WAD - unwindFrac, nrClamped, WAD);
-        if (rawBps > 60) rawBps = 60;
     }
 }

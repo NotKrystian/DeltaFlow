@@ -51,6 +51,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
 
     DeltaFlowFeeMath.FeeParams public feeParams;
     bool public immutable volatileRegimeFlag;
+    bool public immutable useMarketRiskComponent;
 
     error Composite__PairMismatch();
 
@@ -68,7 +69,8 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         FeeSurplus _surplus,
         uint256 _surplusFractionBps,
         DeltaFlowFeeMath.FeeParams memory _feeParams,
-        bool _volatileRegimeFlag
+        bool _volatileRegimeFlag,
+        bool _useMarketRiskComponent
     ) {
         sovereignPool = _pool;
         usdc = _usdc;
@@ -84,6 +86,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         surplusFractionBps = _surplusFractionBps;
         feeParams = _feeParams;
         volatileRegimeFlag = _volatileRegimeFlag;
+        useMarketRiskComponent = _useMarketRiskComponent;
     }
 
     function getSwapFeeInBips(
@@ -142,16 +145,22 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
 
         DeltaFlowFeeMath.FeeParams memory p = feeParams;
 
-        uint256 rawBps = DeltaFeeHelper.blendedQuoteBpsHtml(
-            sheet,
-            p,
-            tradeNotionalWad,
-            volatileRegimeFlag,
-            sheet.perpSzi,
-            deltaSz,
-            p.hMaxSz,
-            p.poolNavWad
-        );
+        uint256 rawBps;
+        if (useMarketRiskComponent) {
+            rawBps = DeltaFeeHelper.blendedQuoteBpsHtml(
+                sheet,
+                p,
+                tradeNotionalWad,
+                volatileRegimeFlag,
+                useMarketRiskComponent,
+                sheet.perpSzi,
+                deltaSz,
+                p.hMaxSz,
+                p.poolNavWad
+            );
+        } else {
+            rawBps = _concentrationFeeBps(sheet, tokenIn, tokenOut, amountInNet, px, baseDec);
+        }
 
         uint256 absPre = DeltaFeeHelper.absInt(sheet.perpSzi);
         int256 hPost = sheet.perpSzi + deltaSz;
@@ -205,5 +214,69 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
             return -int256(uint256(sz));
         }
         return 0;
+    }
+
+    /// @dev Testnet-friendly dynamic curve: fee expands exponentially with post-trade concentration and
+    ///      reaches 60 bps at 100/0 concentration, with 10 bps floor at 50/50.
+    function _concentrationFeeBps(
+        BalanceSheet memory sheet,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountInNet,
+        uint256 px,
+        uint8 baseDec
+    ) internal view returns (uint256) {
+        uint256 usdcPost = sheet.evmUsdc + sheet.coreUsdc;
+        uint256 basePost = sheet.evmBase + sheet.coreBase;
+
+        if (px == 0) return 10;
+
+        if (tokenIn == usdc && tokenOut == base) {
+            usdcPost += amountInNet;
+            uint256 baseOut = Math.mulDiv(amountInNet, 10 ** uint256(baseDec), px);
+            basePost = baseOut >= basePost ? 0 : (basePost - baseOut);
+        } else if (tokenIn == base && tokenOut == usdc) {
+            basePost += amountInNet;
+            uint256 usdcOut = Math.mulDiv(amountInNet, px, 10 ** uint256(baseDec));
+            usdcPost = usdcOut >= usdcPost ? 0 : (usdcPost - usdcOut);
+        }
+
+        uint256 baseValUsdcRaw = Math.mulDiv(basePost, px, 10 ** uint256(baseDec));
+        uint256 totalValUsdcRaw = usdcPost + baseValUsdcRaw;
+        if (totalValUsdcRaw == 0) return 10;
+
+        // c = |U - B| / (U + B) in [0,1] WAD; 0 at 50/50 and 1 at 100/0.
+        uint256 diff = usdcPost > baseValUsdcRaw ? (usdcPost - baseValUsdcRaw) : (baseValUsdcRaw - usdcPost);
+        uint256 cWad = Math.mulDiv(diff, WAD, totalValUsdcRaw);
+        uint256 cExpWad = _expConcentrationCurveWad(cWad); // exponential expansion in [0, WAD]
+
+        uint256 minBps = 10;
+        uint256 maxBps = 60;
+        return minBps + Math.mulDiv(maxBps - minBps, cExpWad, WAD);
+    }
+
+    /// @dev Exponential concentration curve on [0,1]: (e^(k*c)-1)/(e^k-1), k=2.
+    function _expConcentrationCurveWad(uint256 cWad) internal pure returns (uint256) {
+        if (cWad == 0) return 0;
+        if (cWad >= WAD) return WAD;
+
+        uint256 k = 2 * WAD;
+        uint256 x = Math.mulDiv(k, cWad, WAD);
+        uint256 num = _expWad(x) - WAD;
+        uint256 den = _expWad(k) - WAD;
+        if (den == 0) return cWad;
+        return Math.min(WAD, Math.mulDiv(num, WAD, den));
+    }
+
+    /// @dev Small bounded exp approximation for x in WAD scale.
+    function _expWad(uint256 xWad) internal pure returns (uint256) {
+        uint256 term = WAD;
+        uint256 sum = WAD;
+        for (uint256 i = 1; i < 24; i++) {
+            term = Math.mulDiv(term, xWad, WAD * i);
+            sum += term;
+            if (term < 1e12) break;
+        }
+        return sum;
     }
 }

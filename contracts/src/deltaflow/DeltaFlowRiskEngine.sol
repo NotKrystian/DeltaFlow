@@ -49,7 +49,8 @@ contract DeltaFlowRiskEngine {
         bool isUnwind,
         bool isNewRisk
     ) external view {
-        if (rawFeeBps > policy.rawFeeRejectBps) {
+        // `rawFeeRejectBps == 0` disables this guard (useful for testnet tuning).
+        if (policy.rawFeeRejectBps > 0 && rawFeeBps > policy.rawFeeRejectBps) {
             revert RiskEngine__RawFeeTooHigh(rawFeeBps, policy.rawFeeRejectBps);
         }
 

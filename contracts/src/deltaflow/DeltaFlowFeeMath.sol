@@ -54,9 +54,12 @@ library DeltaFlowFeeMath {
 
         uint256 q = 0;
         if (s.navWad > 0) {
-            q = Math.mulDiv(s.shortfallWad, WAD, s.navWad);
+            q = Math.min(WAD, Math.mulDiv(s.shortfallWad, WAD, s.navWad));
         }
-        uint256 exhaust = Math.mulDiv(p.exhaustLinearWad, q, WAD) + Math.mulDiv(p.exhaustQuadWad, Math.mulDiv(q, q, WAD), WAD);
+        // Exhaustion coefficients are WAD-scaled; convert to bips before summing with fee components.
+        uint256 exhaustWad =
+            Math.mulDiv(p.exhaustLinearWad, q, WAD) + Math.mulDiv(p.exhaustQuadWad, Math.mulDiv(q, q, WAD), WAD);
+        uint256 exhaust = exhaustWad / WAD;
 
         uint256 x = s.navWad > 0 ? Math.mulDiv(s.shortfallWad + tradeNotionalUsdcWad / 4, WAD, s.navWad) : WAD;
         x = Math.min(x, 3 * WAD);

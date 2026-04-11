@@ -317,16 +317,21 @@ export default function SwapCard() {
     },
   });
 
-  const feeBips = useMemo(
-    () => extractFeeInBipsFromModuleReturn(feeDataRaw),
-    [feeDataRaw]
+  const feeBips = useMemo(() => {
+    if (feeIsError || feeDataRaw == null) return null;
+    return extractFeeInBipsFromModuleReturn(feeDataRaw);
+  }, [feeDataRaw, feeIsError]);
+  const feePct = useMemo(
+    () => (feeBips == null ? null : Number(feeBips) / 100),
+    [feeBips]
   );
-  const feePct = useMemo(() => Number(feeBips) / 100, [feeBips]);
 
   const amountInMinus = useMemo(() => {
     if (amountInParsed <= 0n) return 0n;
-    return amountInMinusFee(amountInParsed, feeBips);
+    return amountInMinusFee(amountInParsed, feeBips ?? 0n);
   }, [amountInParsed, feeBips]);
+
+  const effectiveFeeBipsForQuote = feeBips ?? 0n;
 
   // ALM quote
   const {
@@ -344,7 +349,7 @@ export default function SwapCard() {
             {
               isZeroToOne,
               amountInMinusFee: amountInMinus,
-              feeInBips: feeBips,
+              feeInBips: effectiveFeeBipsForQuote,
               sender: (address ??
                 "0x0000000000000000000000000000000000000000") as `0x${string}`,
               recipient: (address ??
@@ -558,7 +563,13 @@ export default function SwapCard() {
     // If fee module reverted, show it (this usually means vault liquidity require() failed)
     if (feeIsError) return { text: "Fee module reverted", disabled: true };
 
-    if (amountInParsed > 0n && (feeLoading || quoteLoading))
+    if (amountInParsed > 0n && feeLoading)
+      return { text: "Quoting...", disabled: true };
+
+    // If quote reverted, show it (ALM require/price issue)
+    if (feeIsError) return { text: "Fee module reverted", disabled: true };
+
+    if (amountInParsed > 0n && quoteLoading)
       return { text: "Quoting...", disabled: true };
 
     // If quote reverted, show it (ALM require/price issue)
@@ -631,10 +642,18 @@ export default function SwapCard() {
             <div className="flex items-center justify-between gap-3 text-[var(--text-muted)] mt-2">
               <span>Swap fee (module)</span>
               <span className="text-[var(--foreground)]">
-                {feePct.toFixed(2)}%{" "}
-                <span className="text-[var(--text-muted)]">
-                  ({feeBips.toString()} bips)
-                </span>
+                {feeBips == null || feePct == null ? (
+                  <span className="text-[var(--text-muted)]">
+                    unavailable (module reverted)
+                  </span>
+                ) : (
+                  <>
+                    {feePct.toFixed(2)}%{" "}
+                    <span className="text-[var(--text-muted)]">
+                      ({feeBips.toString()} bips)
+                    </span>
+                  </>
+                )}
               </span>
             </div>
             <p className="text-[10px] text-[var(--text-muted)] mt-1.5 leading-snug">

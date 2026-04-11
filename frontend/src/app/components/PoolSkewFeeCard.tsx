@@ -147,6 +147,7 @@ export default function PoolSkewFeeCard({
     data: feeProbeRaw,
     isError: feeProbeError,
     isLoading: feeProbeLoading,
+    error: feeProbeErr,
   } = useReadContract({
     address: feeModuleChecksum,
     abi: FEE_MODULE_ABI,
@@ -176,6 +177,11 @@ export default function PoolSkewFeeCard({
   }, [usdcRaw, baseRaw, px, baseDecimals]);
 
   const feeImmutableSettled = !lBaseFee && !lMinFee && !lMaxFee;
+  const hasV3Immutables =
+    baseFeeBips !== undefined &&
+    minFeeBips !== undefined &&
+    maxFeeBips !== undefined;
+  const isLikelyComposite = feeImmutableSettled && !hasV3Immutables;
 
   /**
    * Prefer V3 immutables; else infer base by binary search so
@@ -183,7 +189,7 @@ export default function PoolSkewFeeCard({
    */
   const baseF = useMemo(() => {
     if (baseFeeBips !== undefined) return BigInt(baseFeeBips as bigint);
-    if (!feeImmutableSettled) return undefined;
+    if (!feeImmutableSettled || isLikelyComposite) return undefined;
     if (baseFeeBips === undefined && feeProbeLoading) return undefined;
     const imin = minFeeBips !== undefined ? BigInt(minFeeBips as bigint) : 0n;
     const imax = maxFeeBips !== undefined ? BigInt(maxFeeBips as bigint) : 10000n;
@@ -206,12 +212,12 @@ export default function PoolSkewFeeCard({
       );
       if (inferred > 0n && inferred <= 10000n) return inferred;
     }
-    if (poolDefaultFeeBips !== undefined)
-      return BigInt(poolDefaultFeeBips as bigint);
+    if (poolDefaultFeeBips !== undefined) return BigInt(poolDefaultFeeBips as bigint);
     return 30n;
   }, [
     baseFeeBips,
     feeImmutableSettled,
+    isLikelyComposite,
     feeProbeLoading,
     probeFeeBips,
     split,
@@ -227,24 +233,23 @@ export default function PoolSkewFeeCard({
 
   const minF = useMemo(() => {
     if (minFeeBips !== undefined) return BigInt(minFeeBips as bigint);
-    if (!feeImmutableSettled) return undefined;
+    if (!feeImmutableSettled || isLikelyComposite) return undefined;
     return 0n;
-  }, [minFeeBips, feeImmutableSettled]);
+  }, [minFeeBips, feeImmutableSettled, isLikelyComposite]);
 
   const maxF = useMemo(() => {
     if (maxFeeBips !== undefined) return BigInt(maxFeeBips as bigint);
-    if (!feeImmutableSettled) return undefined;
+    if (!feeImmutableSettled || isLikelyComposite) return undefined;
     return 10000n;
-  }, [maxFeeBips, feeImmutableSettled]);
+  }, [maxFeeBips, feeImmutableSettled, isLikelyComposite]);
 
   const usingFallbackImmutableFees =
-    feeImmutableSettled &&
-    (baseFeeBips === undefined ||
-      minFeeBips === undefined ||
-      maxFeeBips === undefined);
+    feeImmutableSettled && !isLikelyComposite &&
+    (baseFeeBips === undefined || minFeeBips === undefined || maxFeeBips === undefined);
 
   const currentFeeBips = useMemo(() => {
     if (
+      isLikelyComposite ||
       !split ||
       usdcRaw === undefined ||
       baseF === undefined ||
@@ -261,13 +266,14 @@ export default function PoolSkewFeeCard({
       minF,
       maxF
     );
-  }, [split, usdcRaw, baseF, minF, maxF]);
+  }, [isLikelyComposite, split, usdcRaw, baseF, minF, maxF]);
 
   /** Prefer same on-chain call as Swap (`getSwapFeeInBips`); else modeled curve. */
   const displayCurrentFeeBips = useMemo(() => {
     if (probeFeeBips !== undefined) return probeFeeBips;
+    if (isLikelyComposite) return null;
     return currentFeeBips;
-  }, [probeFeeBips, currentFeeBips]);
+  }, [probeFeeBips, isLikelyComposite, currentFeeBips]);
 
   const [sliderTenths, setSliderTenths] = useState(500);
 
@@ -314,8 +320,7 @@ export default function PoolSkewFeeCard({
   const ready =
     split !== null &&
     displayCurrentFeeBips !== null &&
-    simulatedFeeBips !== null &&
-    feeParamsReady;
+    (isLikelyComposite || (simulatedFeeBips !== null && feeParamsReady));
 
   const spotFailed = enabled && !spotLoading && (spotError || spotPxRaw === undefined);
 
@@ -365,6 +370,26 @@ export default function PoolSkewFeeCard({
             Current fee uses on-chain <code className="text-[10px]">getSwapFeeInBips</code> (1 USDC probe, USDC→
             {market.baseSymbol}). Skew curve infers base from that quote minus the imbalance term; bounds default to 0–10000
             bips. Pool <code className="text-[10px]">defaultSwapFeeBips</code> is unrelated once a module is deployed.
+          </p>
+        )}
+
+        {!loading && isLikelyComposite && (
+          <p className="text-xs text-[var(--text-secondary)] border border-[var(--border)] rounded-xl p-3 bg-[var(--card)]">
+            Composite fee module detected (no <code className="text-[10px]">baseFeeBips/min/max</code> immutables).
+            Current fee is shown from on-chain{" "}
+            <code className="text-[10px]">getSwapFeeInBips</code> probe (1 USDC, USDC→{market.baseSymbol}).
+            Skew slider modeling is disabled for this module type.
+          </p>
+        )}
+
+        {!loading && isLikelyComposite && probeFeeBips === undefined && (
+          <p className="text-sm text-amber-500/90">
+            On-chain fee probe unavailable right now (RPC/module call failed). Retry refresh.
+            {feeProbeErr && (
+              <span className="block font-mono text-xs mt-1 opacity-90">
+                {(feeProbeErr as Error).message?.slice(0, 220)}
+              </span>
+            )}
           </p>
         )}
 
@@ -432,7 +457,7 @@ export default function PoolSkewFeeCard({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <div className={`grid grid-cols-1 ${isLikelyComposite ? "" : "sm:grid-cols-2"} gap-3 text-sm`}>
               <div className="rounded-xl bg-[var(--card)] border border-[var(--border)] p-3">
                 <p className="text-xs text-[var(--text-muted)] uppercase tracking-wide">
                   Current (vault)
@@ -446,16 +471,21 @@ export default function PoolSkewFeeCard({
                       On-chain <code className="text-[9px]">getSwapFeeInBips</code> (1 USDC, USDC→{market.baseSymbol}
                       ), same API as Swap
                     </>
+                  ) : isLikelyComposite ? (
+                    <>On-chain probe unavailable</>
                   ) : (
                     <>Modeled from vault skew (probe unavailable)</>
                   )}
                 </p>
-                <p className="text-[10px] text-[var(--text-muted)] mt-1">
-                  Curve base {bipsToPct(baseF!).toFixed(2)}% · bounds {bipsToPct(minF!).toFixed(2)}–
-                  {bipsToPct(maxF!).toFixed(2)}%
-                </p>
+                {!isLikelyComposite && (
+                  <p className="text-[10px] text-[var(--text-muted)] mt-1">
+                    Curve base {bipsToPct(baseF!).toFixed(2)}% · bounds {bipsToPct(minF!).toFixed(2)}–
+                    {bipsToPct(maxF!).toFixed(2)}%
+                  </p>
+                )}
               </div>
-              <div className="rounded-xl bg-[var(--card)] border border-[var(--border)] p-3">
+              {!isLikelyComposite && (
+                <div className="rounded-xl bg-[var(--card)] border border-[var(--border)] p-3">
                 <p className="text-xs text-[var(--text-muted)] uppercase tracking-wide">
                   At slider (same total value)
                 </p>
@@ -467,10 +497,12 @@ export default function PoolSkewFeeCard({
                   {(100 - sliderTenths / 10).toFixed(1)}% {market.baseSymbol}{" "}
                   value
                 </p>
-              </div>
+                </div>
+              )}
             </div>
 
-            <div>
+            {!isLikelyComposite && (
+              <div>
               <label className="block text-xs text-[var(--text-muted)] mb-2">
                 Explore skew — same total value as current vault inventory; fee
                 vs hypothetical USDC/base split
@@ -488,7 +520,8 @@ export default function PoolSkewFeeCard({
                 <span>Balanced</span>
                 <span>Heavy USDC</span>
               </div>
-            </div>
+              </div>
+            )}
           </>
         )}
       </div>
