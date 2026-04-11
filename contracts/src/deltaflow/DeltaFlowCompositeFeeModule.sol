@@ -167,7 +167,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
             );
         } else {
             uint256 concBps = _concentrationFeeBps(sheet, tokenIn, tokenOut, amountInNet, px, baseDec);
-            rawBps = _blendConcentrationWithUnwind(p.hMaxSz, absPre, absPost, concBps);
+            rawBps = _blendConcentrationWithUnwind(p.hMaxSz, sheet.perpSzi, deltaSz, absPre, absPost, concBps);
         }
 
         bool unwind = absPost < absPre;
@@ -198,16 +198,24 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
     }
 
     /// @dev Apply memo-style unwind fraction blend in concentration-only mode.
+    /// @dev If hedge crosses zero in one swap, use path-integral average (same as `hedgeCrossingPathAvgBps`).
     function _blendConcentrationWithUnwind(
         uint256 hMaxSz,
+        int256 perpPre,
+        int256 deltaSz,
         uint256 absPre,
         uint256 absPost,
         uint256 concBps
     ) internal pure returns (uint256) {
-        if (absPre == 0 || absPost >= absPre) return concBps;
-        uint256 unwindFrac = Math.mulDiv(absPre - absPost, WAD, absPre);
+        int256 hPost = perpPre + deltaSz;
+        bool crossesZero = (perpPre > 0 && hPost < 0) || (perpPre < 0 && hPost > 0);
         uint256 utilPre = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPre, WAD, hMaxSz));
         uint256 utilPost = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPost, WAD, hMaxSz));
+        if (crossesZero) {
+            return DeltaFeeHelper.hedgeCrossingPathAvgBps(utilPre, utilPost);
+        }
+        if (absPre == 0 || absPost >= absPre) return concBps;
+        uint256 unwindFrac = Math.mulDiv(absPre - absPost, WAD, absPre);
         uint256 unwindBps = DeltaFeeHelper.unwindFeeBpsIntegral(utilPre, utilPost);
         uint256 unwindWeight = _inverseExpUnwindWeightWad(unwindFrac);
         return Math.mulDiv(unwindWeight, unwindBps, WAD) + Math.mulDiv(WAD - unwindWeight, concBps, WAD);

@@ -15,49 +15,78 @@ library DeltaFeeHelper {
     uint256 internal constant STRATEGIC_WARN = (8 * WAD) / 10;
     uint256 internal constant STRATEGIC_HARD = WAD;
 
-    function fifthRootWad(uint256 t) internal pure returns (uint256 y) {
-        if (t == 0) return 0;
-        y = t;
-        for (uint256 i = 0; i < 16; i++) {
-            uint256 y4 = _pow4(y);
-            if (y4 == 0) break;
-            uint256 term = Math.mulDiv(t, WAD * WAD * WAD * WAD, y4);
-            y = (4 * y + term) / 5;
+    /// @dev Antiderivative of `(WAD - u)` for `u ∈ [0,WAD]`: `F(u) = ∫_0^u (WAD - t) dt` (raw, not WAD-normalized).
+    function _linearUnwindAntiderivRaw(uint256 uWad) internal pure returns (uint256) {
+        return WAD * uWad - (uWad * uWad) / 2;
+    }
+
+    /// @dev `e^(x/WAD)` in WAD (same series as `DeltaFlowFeeMath._expWad`).
+    function _expWad(uint256 xWad) internal pure returns (uint256) {
+        uint256 term = WAD;
+        uint256 sum = WAD;
+        for (uint256 i = 1; i < 24; i++) {
+            term = Math.mulDiv(term, xWad, WAD * i);
+            sum += term;
+            if (term < 1e12) break;
         }
+        return sum;
     }
 
-    function _pow4(uint256 y) internal pure returns (uint256) {
-        uint256 y2 = Math.mulDiv(y, y, WAD);
-        return Math.mulDiv(y2, y2, WAD);
+    /// @dev Exponential ramp on [0,WAD]: `(e^(2u/WAD)-1)/(e^2-1)` scaled to WAD (matches concentration curve shape).
+    function _expCurveUtilWad(uint256 uWad) internal pure returns (uint256) {
+        if (uWad == 0) return 0;
+        if (uWad >= WAD) return WAD;
+        uint256 k = 2 * WAD;
+        uint256 x = Math.mulDiv(k, uWad, WAD);
+        uint256 num = _expWad(x) - WAD;
+        uint256 den = _expWad(k) - WAD;
+        if (den == 0) return uWad;
+        return Math.min(WAD, Math.mulDiv(num, WAD, den));
     }
 
-    /// @dev `((t/WAD)^2.2) * WAD` for `t = (1−u)·WAD`.
-    function pow22FromTWad(uint256 t) internal pure returns (uint256) {
-        if (t == 0) return 0;
-        uint256 r = fifthRootWad(t);
-        uint256 t2 = Math.mulDiv(t, t, WAD);
-        return Math.mulDiv(t2, r, WAD);
+    /// @dev Marginal new-risk bps at hedge utilization `u`: 10 → 60 bps following `_expCurveUtilWad`.
+    function _newRiskMarginalBpsAtUtil(uint256 uWad) internal pure returns (uint256) {
+        return 10 + Math.mulDiv(50, _expCurveUtilWad(uWad), WAD);
     }
 
-    /// @dev Unwind average → **integer bips** (~2–8): `2.5 + (5.5/2.2)·Δ((1−u)^2.2)/Δu` (tenths rounded).
+    /// @dev ∫_0^U `_newRiskMarginalBpsAtUtil` du via trapezoids (16 steps); `U` in WAD.
+    function _integralNewRisk0ToU(uint256 uEndWad) internal pure returns (uint256) {
+        if (uEndWad == 0) return 0;
+        uint256 n = 16;
+        uint256 sum = 0;
+        for (uint256 i = 0; i < n; i++) {
+            uint256 u0 = Math.mulDiv(uEndWad, i, n);
+            uint256 u1 = Math.mulDiv(uEndWad, i + 1, n);
+            uint256 f0 = _newRiskMarginalBpsAtUtil(u0);
+            uint256 f1 = _newRiskMarginalBpsAtUtil(u1);
+            sum += Math.mulDiv(f0 + f1, uEndWad, 2 * n);
+        }
+        return sum;
+    }
+
+    /// @notice Average bps for a **zero-crossing** hedge path: unwind integral (0→10 bps marginal) + new-risk integral (10→60 marginal), divided by path length `uPre+uPost`.
+    function hedgeCrossingPathAvgBps(uint256 utilPreWad, uint256 utilPostWad) internal pure returns (uint256) {
+        uint256 denom = utilPreWad + utilPostWad;
+        if (denom == 0) return 10;
+        uint256 deltaFU = _linearUnwindAntiderivRaw(utilPreWad);
+        uint256 iu = Math.mulDiv(10, deltaFU, WAD);
+        uint256 iN = _integralNewRisk0ToU(utilPostWad);
+        uint256 total = iu + iN;
+        return Math.mulDiv(total, 1, denom);
+    }
+
+    /// @dev Unwind-only: **area under** marginal fee `m(u) = 10·(WAD-u)/WAD` from `utilPost`→`utilPre`, divided by `Δu` → average bps.
     function unwindFeeBpsIntegral(uint256 utilPreWad, uint256 utilPostWad) internal pure returns (uint256) {
         if (utilPreWad <= utilPostWad) return 3;
         uint256 du = utilPreWad - utilPostWad;
-        uint256 tPre = WAD - utilPreWad;
-        uint256 tPost = WAD - utilPostWad;
-        uint256 a = pow22FromTWad(tPost);
-        uint256 b = pow22FromTWad(tPre);
-        uint256 tenths;
         if (du < 10) {
-            tenths = 25 + Math.mulDiv(55, WAD - utilPostWad, WAD);
-        } else if (a <= b) {
-            tenths = 25;
-        } else {
-            uint256 delta = a - b;
-            tenths = 25 + Math.mulDiv(55, Math.mulDiv(delta, WAD, du), 22);
+            uint256 mLo = Math.mulDiv(10, WAD - utilPostWad, WAD);
+            uint256 mHi = Math.mulDiv(10, WAD - utilPreWad, WAD);
+            return (mLo + mHi) / 2;
         }
-        if (tenths > 80) tenths = 80;
-        return (tenths + 5) / 10; // integer bips
+        uint256 deltaF = _linearUnwindAntiderivRaw(utilPreWad) - _linearUnwindAntiderivRaw(utilPostWad);
+        uint256 iSeg = Math.mulDiv(10, deltaF, WAD);
+        return Math.mulDiv(iSeg, 1, du);
     }
 
     function sqrtWad(uint256 x) internal pure returns (uint256) {
@@ -148,6 +177,8 @@ library DeltaFeeHelper {
     }
 
     /// @notice Blended fee: `unwindFrac * unwindBps + (1−unwindFrac) * clamp(newRisk,10,60)`, then `min(60,…)`.
+    /// @dev If the hedge **crosses zero** (long→short or short→long) in one quote, fee is the **path integral**
+    ///      average (unwind 0→10 bps marginal + new-risk 10→60 marginal), not the `unwindFrac` blend.
     function blendedQuoteBpsHtml(
         BalanceSheet memory s,
         DeltaFlowFeeMath.FeeParams memory p,
@@ -163,14 +194,19 @@ library DeltaFeeHelper {
         int256 hPost = perpPre + deltaSz;
         uint256 absPost = absInt(hPost);
 
+        uint256 utilPre = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPre, WAD, hMaxSz));
+        uint256 utilPost = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPost, WAD, hMaxSz));
+
+        bool crossesZero = (perpPre > 0 && hPost < 0) || (perpPre < 0 && hPost > 0);
+        if (crossesZero) {
+            return hedgeCrossingPathAvgBps(utilPre, utilPost);
+        }
+
         bool reduces = absPost < absPre;
         uint256 unwindFrac = 0;
         if (reduces && absPre > 0) {
             unwindFrac = Math.mulDiv(absPre - absPost, WAD, absPre);
         }
-
-        uint256 utilPre = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPre, WAD, hMaxSz));
-        uint256 utilPost = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPost, WAD, hMaxSz));
 
         uint256 unwindBps = unwindFeeBpsIntegral(utilPre, utilPost);
 
