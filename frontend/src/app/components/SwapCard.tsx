@@ -156,6 +156,11 @@ export default function SwapCard() {
   const { market } = useMarket();
   const pool = market.pool;
   const SWAP_FEE_MODULE_FALLBACK = market.swapFeeModule;
+  const [isHydrated, setIsHydrated] = useState(false);
+
+  useEffect(() => {
+    setIsHydrated(true);
+  }, []);
 
   const [sellToken, setSellToken] = useState<"USDC" | "BASE">("USDC");
   const [amountIn, setAmountIn] = useState("");
@@ -546,6 +551,8 @@ export default function SwapCard() {
 
   // Button state
   const buttonState = (() => {
+    // Avoid SSR/client hydration mismatch from wallet auto-connect state.
+    if (!isHydrated) return { text: "Connect Wallet", disabled: true };
     if (!isConnected) return { text: "Connect Wallet", disabled: true };
     if (!amountIn || Number(amountIn) === 0)
       return { text: "Enter amount", disabled: true };

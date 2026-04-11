@@ -248,6 +248,7 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
      *          which could rapidly increase swap fees at arbitrary block times.
      */
     uint256 public swapFeeModuleUpdateTimestamp;
+    uint256 public immutable swapFeeModuleUpdateDelay;
 
     /**
      *     @notice token0 and token1 LP reserves.
@@ -342,6 +343,7 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
 
         defaultSwapFeeBips =
             args.defaultSwapFeeBips <= _MAX_SWAP_FEE_BIPS ? args.defaultSwapFeeBips : _MAX_SWAP_FEE_BIPS;
+        swapFeeModuleUpdateDelay = args.swapFeeModuleUpdateDelay;
 
         // Initialize timestamp at which Swap Fee Module can be set
         swapFeeModuleUpdateTimestamp = block.timestamp;
@@ -544,14 +546,14 @@ contract SovereignPool is ISovereignPool, ReentrancyGuard {
      *     @param swapFeeModule_ Address of Swap Fee Module to whitelist.
      */
     function setSwapFeeModule(address swapFeeModule_) external override onlyPoolManager nonReentrant {
-        // Swap Fee Module cannot be updated too frequently (at most once every 3 days)
+        // Swap Fee Module cannot be updated too frequently unless delay is configured as 0 (debug mode).
         if (block.timestamp < swapFeeModuleUpdateTimestamp) {
             revert SovereignPool__setSwapFeeModule_timelock();
         }
 
         _swapFeeModule = ISwapFeeModule(swapFeeModule_);
-        // Update timestamp at which the next Swap Fee Module update can occur
-        swapFeeModuleUpdateTimestamp = block.timestamp + 3 days;
+        // Update timestamp at which the next Swap Fee Module update can occur.
+        swapFeeModuleUpdateTimestamp = block.timestamp + swapFeeModuleUpdateDelay;
 
         emit SwapFeeModuleSet(swapFeeModule_);
     }

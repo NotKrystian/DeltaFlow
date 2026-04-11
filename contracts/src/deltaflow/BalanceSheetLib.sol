@@ -9,6 +9,10 @@ import {HLConversions} from "@hyper-evm-lib/src/common/HLConversions.sol";
 
 import {BalanceSheet} from "./DeltaFlowTypes.sol";
 
+interface ICoreAllocationReader {
+    function getTotalAllocatedUSDC() external view returns (uint256);
+}
+
 /// @title BalanceSheetLib
 /// @notice Aggregates EVM ERC-20 balances on `account` with HyperCore spot + optional perp.
 library BalanceSheetLib {
@@ -43,6 +47,11 @@ library BalanceSheetLib {
         PrecompileLib.SpotBalance memory csb = PrecompileLib.spotBalance(account, baseIx);
         s.coreUsdc = HLConversions.weiToEvm(usdc, csu.total);
         s.coreBase = HLConversions.weiToEvm(base, csb.total);
+        // Also include USDC allocated into Core vault(s) via SovereignVault.allocate().
+        // This is held as Core vault equity (not spot balance), but still part of inventory.
+        try ICoreAllocationReader(account).getTotalAllocatedUSDC() returns (uint256 allocUsdc) {
+            s.coreUsdc += allocUsdc;
+        } catch {}
 
         if (perpIndex != type(uint32).max) {
             PrecompileLib.Position memory p = PrecompileLib.position(account, uint16(perpIndex));

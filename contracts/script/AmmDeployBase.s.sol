@@ -182,6 +182,7 @@ abstract contract AmmDeployBase is Script {
             poolManager: p.poolManager,
             verifierModule: p.verifierModule,
             defaultSwapFeeBips: p.defaultSwapFeeBips,
+            swapFeeModuleUpdateDelay: vm.envOr("SWAP_FEE_MODULE_TIMELOCK_SEC", uint256(0)),
             isToken0Rebase: false,
             isToken1Rebase: false,
             token0AbsErrorTolerance: 0,
