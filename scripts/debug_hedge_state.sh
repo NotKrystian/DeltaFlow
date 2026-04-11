@@ -188,6 +188,24 @@ read_u256() {
   trim_cast "$(cast call "$addr" "$sig" --rpc-url "$RPC" --block "$block")"
 }
 
+# When debugging a specific tx, Core precompile state should match the block that included it (not `latest`).
+TX_BLOCK_TAG="latest"
+TX_BLOCK_NUM=""
+if [[ -n "${TX_HASH:-}" ]]; then
+  if ! RECEIPT_JSON_EARLY="$(cast receipt "$TX_HASH" --rpc-url "$RPC" --json 2>/dev/null)"; then
+    echo "Invalid or pending tx hash: $TX_HASH" >&2
+    exit 1
+  fi
+  TX_BLOCK_NUM="$(python3 - "$RECEIPT_JSON_EARLY" <<'PY'
+import json, sys
+r = json.loads(sys.argv[1])
+bn = r["blockNumber"]
+print(int(bn, 0) if isinstance(bn, str) else int(bn))
+PY
+)"
+  TX_BLOCK_TAG="$(printf '0x%x' "$TX_BLOCK_NUM")"
+fi
+
 BASE_TOKEN_INDEX="${PURR_TOKEN_INDEX:-}"
 if [[ -z "$BASE_TOKEN_INDEX" && -n "${HEDGE_ESCROW:-}" ]]; then
   BASE_TOKEN_INDEX="$(trim_cast "$(cast call "$HEDGE_ESCROW" "purrTokenIndex()(uint64)" --rpc-url "$RPC" 2>/dev/null || true)")"
@@ -225,21 +243,25 @@ echo "USDC(vault):         $(cast call "$USDC" "balanceOf(address)(uint256)" "$V
 echo "BASE(vault):         $(cast call "$BASE" "balanceOf(address)(uint256)" "$VAULT" --rpc-url "$RPC")"
 echo ""
 
-echo "== Core precompile reads =="
-MARK_RAW_HEX="$(call_precompile_raw "$MARK_PX_PRECOMPILE" "$(cast abi-encode "foo(uint32)" "$PERP_INDEX")" "latest")"
+if [[ -n "$TX_BLOCK_NUM" ]]; then
+  echo "== Core precompile reads (end of block $TX_BLOCK_NUM — use this when debugging a tx) =="
+else
+  echo "== Core precompile reads (latest) =="
+fi
+MARK_RAW_HEX="$(call_precompile_raw "$MARK_PX_PRECOMPILE" "$(cast abi-encode "foo(uint32)" "$PERP_INDEX")" "$TX_BLOCK_TAG")"
 echo "markPx(perp=$PERP_INDEX):     $(decode_u64_word "$MARK_RAW_HEX")"
 
-POS_RAW="$(call_precompile_raw "$POSITION_PRECOMPILE" "$(cast abi-encode "foo(address,uint16)" "$VAULT" "$PERP_INDEX")" "latest")"
+POS_RAW="$(call_precompile_raw "$POSITION_PRECOMPILE" "$(cast abi-encode "foo(address,uint16)" "$VAULT" "$PERP_INDEX")" "$TX_BLOCK_TAG")"
 echo "position(vault,perp):         $(decode_position "$POS_RAW")"
 
-CORE_EXISTS_RAW="$(call_precompile_raw "$CORE_USER_EXISTS_PRECOMPILE" "$(cast abi-encode "foo(address)" "$VAULT")" "latest")"
+CORE_EXISTS_RAW="$(call_precompile_raw "$CORE_USER_EXISTS_PRECOMPILE" "$(cast abi-encode "foo(address)" "$VAULT")" "$TX_BLOCK_TAG")"
 echo "coreUserExists(vault):        $(decode_core_user_exists "$CORE_EXISTS_RAW")"
 
-USDC_SPOT_RAW="$(call_precompile_raw "$SPOT_BALANCE_PRECOMPILE" "$(cast abi-encode "foo(address,uint64)" "$VAULT" 0)" "latest")"
+USDC_SPOT_RAW="$(call_precompile_raw "$SPOT_BALANCE_PRECOMPILE" "$(cast abi-encode "foo(address,uint64)" "$VAULT" 0)" "$TX_BLOCK_TAG")"
 echo "spotBalance(vault,USDC=0):    $(decode_spot_balance "$USDC_SPOT_RAW")"
 
 if [[ -n "$BASE_TOKEN_INDEX" ]]; then
-  BASE_SPOT_RAW="$(call_precompile_raw "$SPOT_BALANCE_PRECOMPILE" "$(cast abi-encode "foo(address,uint64)" "$VAULT" "$BASE_TOKEN_INDEX")" "latest")"
+  BASE_SPOT_RAW="$(call_precompile_raw "$SPOT_BALANCE_PRECOMPILE" "$(cast abi-encode "foo(address,uint64)" "$VAULT" "$BASE_TOKEN_INDEX")" "$TX_BLOCK_TAG")"
   echo "spotBalance(vault,BASE=$BASE_TOKEN_INDEX): $(decode_spot_balance "$BASE_SPOT_RAW")"
 else
   echo "spotBalance(vault,BASE):      unavailable (no BASE token index found)"
@@ -247,12 +269,13 @@ fi
 echo ""
 
 if [[ -n "$TX_HASH" ]]; then
-  RECEIPT_JSON="$(cast receipt "$TX_HASH" --rpc-url "$RPC" --json)"
+  RECEIPT_JSON="${RECEIPT_JSON_EARLY:-$(cast receipt "$TX_HASH" --rpc-url "$RPC" --json)}"
   BLOCK_NUM="$(
     python3 - "$RECEIPT_JSON" <<'PY'
 import json, sys
 r = json.loads(sys.argv[1])
-print(int(r["blockNumber"], 0) if isinstance(r["blockNumber"], str) else int(r["blockNumber"]))
+bn = r["blockNumber"]
+print(int(bn, 0) if isinstance(bn, str) else int(bn))
 PY
   )"
   PRE_BLOCK=$((BLOCK_NUM - 1))
@@ -410,6 +433,21 @@ PY
     echo "lastHedgeLeg:        $PRE_LEG ($(leg_label "$PRE_LEG")) -> $POST_LEG ($(leg_label "$POST_LEG"))"
     echo "USDC(vault):         $PRE_USDC_BAL -> $POST_USDC_BAL"
     echo "BASE(vault):         $PRE_BASE_BAL -> $POST_BASE_BAL"
+
+    if [[ -n "$PERP_INDEX" && "$PERP_INDEX" != "0" ]]; then
+      PRE_POS_RAW="$(call_precompile_raw "$POSITION_PRECOMPILE" "$(cast abi-encode "foo(address,uint16)" "$VAULT" "$PERP_INDEX")" "$(to_block_tag "$PRE_BLOCK")")"
+      POST_POS_RAW="$(call_precompile_raw "$POSITION_PRECOMPILE" "$(cast abi-encode "foo(address,uint16)" "$VAULT" "$PERP_INDEX")" "$(to_block_tag "$BLOCK_NUM")")"
+      echo ""
+      echo "Perp position (precompile, same blocks as vault delta):"
+      echo "  block $PRE_BLOCK: $(decode_position "$PRE_POS_RAW")"
+      echo "  block $BLOCK_NUM: $(decode_position "$POST_POS_RAW")"
+    fi
+
+    echo ""
+    echo "== Interpretation (read with events above) =="
+    echo "* lastHedgeLeg: 1=OpenOnly 2=UnwindOnly 3=UnwindThenOpen. Flat perp + sellPerp IOC => OpenOnly SHORT (not closing a long)."
+    echo "* HedgeSliceQueued pendingBuy/pendingSell are emitted after enqueue; the same tx often HedgeBatchExecuted and clears pending when totalSz >= hedgeSzThreshold."
+    echo "* HedgePayoutEscrowed is the swap tokenOut amount owed to the recipient when the batch pays out — not necessarily 'USDC withdrawn from a closed perp'; bridge/top-up from perp margin happens on other code paths (e.g. immediate hedge or pullPerpUsdcToEvm)."
   fi
 fi
 
