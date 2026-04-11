@@ -224,9 +224,9 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
     /// @dev Apply memo-style unwind fraction blend in concentration-only mode.
     /// @dev Unwind leg uses pool value concentration: 0 bps when fully one-sided, 10 bps at 50/50 (same `c` as `_concentrationFeeBps`).
     ///      If hedge crosses zero in one swap, average that unwind leg at pre/post concentration.
-    /// @dev When `absPre == 0` (no perp in the module snapshot), we must not use `concBps` alone — that curve floors at ~10 bps
-    ///      at balanced pools and rises with imbalance. Without a hedge there is no “new-risk vs unwind” split; the quote is the
-    ///      same linear-in-`(1-c)` band as the unwind leg (0–10 bps).
+    /// @dev When `absPre == 0` (no perp in the module snapshot): if the swap **increases** value imbalance (`c` up), use
+    ///      `concBps` (10→60 toward one-sided inventory). If it **rebalances** (`c` down), use the linear unwind band `10*(1-c)`.
+    ///      Using only the linear band was wrong for “push into the other side” trades, which should rise toward 60 bps.
     function _blendConcentrationWithUnwind(
         int256 perpPre,
         int256 deltaSz,
@@ -242,6 +242,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
             return DeltaFeeHelper.hedgeCrossingUnwindConcAvgBps(cPreWad, cPostWad);
         }
         if (absPre == 0) {
+            if (cPostWad >= cPreWad) return concBps;
             return DeltaFeeHelper.unwindFeeBpsFromConcentrationWad(cPostWad);
         }
         if (absPost >= absPre) return concBps;

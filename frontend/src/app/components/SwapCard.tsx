@@ -324,7 +324,7 @@ export default function SwapCard() {
     }
     if (feeUseMr === false) {
       lines.push(
-        "Concentration-only mode (DF_USE_MARKET_RISK_COMPONENT=false): with an open hedge, the fee blends the linear 0–10 bps (in concentration) unwind leg with the inventory curve; with no hedge on the snapshot, the quote is that linear 0–10 bps curve only (not the exponential inventory floor ~10+ bps)."
+        "Concentration-only mode (DF_USE_MARKET_RISK_COMPONENT=false): with an open hedge, blend linear unwind vs inventory curve. With no hedge: if the swap increases imbalance (c up), inventory curve 10→60; if it rebalances (c down), linear 0–10 bps in c."
       );
     }
     return lines;
