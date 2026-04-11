@@ -421,6 +421,16 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         }
     }
 
+    /// @dev Before paying an escrowed hedge payout, pull from perp / Core spot like the immediate-hedge path (see `_release*Sz` netting).
+    function _topUpEvmBeforeEscrowPayout(address token, uint256 payAmt) internal {
+        if (payAmt == 0) return;
+        if (token == usdc) {
+            _topUpVaultUsdcFromPerpForAmount(payAmt);
+        } else if (token == purr) {
+            _topUpVaultTokenFromCoreSpot(purr, payAmt);
+        }
+    }
+
     /// @dev FIFO release `matchSz` of sell-side hedge notion from escrow (opposite-direction netting).
     function _releaseSellSz(uint256 matchSz) internal {
         uint256 remaining = matchSz;
@@ -442,6 +452,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
                 h.amount -= payAmt;
             }
             remaining -= take;
+            _topUpEvmBeforeEscrowPayout(token, payAmt);
             _sendTokensToRecipient(token, recv, payAmt);
         }
     }
@@ -467,6 +478,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
                 h.amount -= payAmt;
             }
             remaining -= take;
+            _topUpEvmBeforeEscrowPayout(token, payAmt);
             _sendTokensToRecipient(token, recv, payAmt);
         }
     }
