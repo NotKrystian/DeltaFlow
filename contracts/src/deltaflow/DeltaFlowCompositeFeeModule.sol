@@ -94,6 +94,26 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         usePerpPriceForFee = _usePerpPriceForFee;
     }
 
+    /// @notice Net perp `sz` (position + pending buy − pending sell) using the same snapshot as `getSwapFeeInBips`.
+    /// @dev Use this to verify the fee module sees the vault hedge (must match pool `hedgePerpAssetIndex` / `perpIndex` here).
+    function snapshotPerpSzi() external view returns (int256) {
+        address vault = ISovereignPoolLite(sovereignPool).sovereignVault();
+        BalanceSheet memory sheet = BalanceSheetLib.snapshot(
+            vault,
+            usdc,
+            base,
+            perpIndex,
+            spotIndex,
+            capacityWad,
+            spotAssetForBBO,
+            rawPxScale,
+            rawIsPurrPerUsdc,
+            IVaultHedgePending(vault).pendingHedgeBuySz(),
+            IVaultHedgePending(vault).pendingHedgeSellSz()
+        );
+        return sheet.perpSzi;
+    }
+
     function getSwapFeeInBips(
         address tokenIn,
         address tokenOut,
@@ -167,7 +187,11 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
             );
         } else {
             uint256 concBps = _concentrationFeeBps(sheet, tokenIn, tokenOut, amountInNet, px, baseDec);
-            rawBps = _blendConcentrationWithUnwind(p.hMaxSz, sheet.perpSzi, deltaSz, absPre, absPost, concBps);
+            uint256 cPreWad = _concentrationWadForSwap(sheet, tokenIn, tokenOut, amountInNet, px, baseDec, false);
+            uint256 cPostWad = _concentrationWadForSwap(sheet, tokenIn, tokenOut, amountInNet, px, baseDec, true);
+            rawBps = _blendConcentrationWithUnwind(
+                sheet.perpSzi, deltaSz, absPre, absPost, concBps, cPreWad, cPostWad
+            );
         }
 
         bool unwind = absPost < absPre;
@@ -198,25 +222,25 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
     }
 
     /// @dev Apply memo-style unwind fraction blend in concentration-only mode.
-    /// @dev If hedge crosses zero in one swap, use path-integral average (same as `hedgeCrossingPathAvgBps`).
+    /// @dev Unwind leg uses pool value concentration: 0 bps when fully one-sided, 10 bps at 50/50 (same `c` as `_concentrationFeeBps`).
+    ///      If hedge crosses zero in one swap, average that unwind leg at pre/post concentration.
     function _blendConcentrationWithUnwind(
-        uint256 hMaxSz,
         int256 perpPre,
         int256 deltaSz,
         uint256 absPre,
         uint256 absPost,
-        uint256 concBps
+        uint256 concBps,
+        uint256 cPreWad,
+        uint256 cPostWad
     ) internal pure returns (uint256) {
         int256 hPost = perpPre + deltaSz;
         bool crossesZero = (perpPre > 0 && hPost < 0) || (perpPre < 0 && hPost > 0);
-        uint256 utilPre = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPre, WAD, hMaxSz));
-        uint256 utilPost = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPost, WAD, hMaxSz));
         if (crossesZero) {
-            return DeltaFeeHelper.hedgeCrossingPathAvgBps(utilPre, utilPost);
+            return DeltaFeeHelper.hedgeCrossingUnwindConcAvgBps(cPreWad, cPostWad);
         }
         if (absPre == 0 || absPost >= absPre) return concBps;
         uint256 unwindFrac = Math.mulDiv(absPre - absPost, WAD, absPre);
-        uint256 unwindBps = DeltaFeeHelper.unwindFeeBpsIntegral(utilPre, utilPost);
+        uint256 unwindBps = DeltaFeeHelper.unwindFeeBpsFromConcentrationWad(cPostWad);
         uint256 unwindWeight = _inverseExpUnwindWeightWad(unwindFrac);
         return Math.mulDiv(unwindWeight, unwindBps, WAD) + Math.mulDiv(WAD - unwindWeight, concBps, WAD);
     }
@@ -279,6 +303,41 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         return BalanceSheetLib.pxUsdcPerBase(usdcDec, spotIndex, rawPxScale, rawIsPurrPerUsdc);
     }
 
+    /// @dev `c` = |U − B_value| / (U + B_value) in WAD; 0 at 50/50, WAD at 100% one token by value.
+    function _concentrationWadForSwap(
+        BalanceSheet memory sheet,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountInNet,
+        uint256 px,
+        uint8 baseDec,
+        bool postTrade
+    ) internal view returns (uint256) {
+        uint256 usdcAmt = sheet.evmUsdc + sheet.coreUsdc;
+        uint256 baseAmt = sheet.evmBase + sheet.coreBase;
+
+        if (postTrade) {
+            if (tokenIn == usdc && tokenOut == base) {
+                usdcAmt += amountInNet;
+                uint256 baseOut = Math.mulDiv(amountInNet, 10 ** uint256(baseDec), px);
+                baseAmt = baseOut >= baseAmt ? 0 : (baseAmt - baseOut);
+            } else if (tokenIn == base && tokenOut == usdc) {
+                baseAmt += amountInNet;
+                uint256 usdcOut = Math.mulDiv(amountInNet, px, 10 ** uint256(baseDec));
+                usdcAmt = usdcOut >= usdcAmt ? 0 : (usdcAmt - usdcOut);
+            }
+        }
+
+        if (px == 0) return 0;
+
+        uint256 baseValUsdcRaw = Math.mulDiv(baseAmt, px, 10 ** uint256(baseDec));
+        uint256 totalValUsdcRaw = usdcAmt + baseValUsdcRaw;
+        if (totalValUsdcRaw == 0) return 0;
+
+        uint256 diff = usdcAmt > baseValUsdcRaw ? (usdcAmt - baseValUsdcRaw) : (baseValUsdcRaw - usdcAmt);
+        return Math.mulDiv(diff, WAD, totalValUsdcRaw);
+    }
+
     /// @dev Testnet-friendly dynamic curve: fee expands exponentially with post-trade concentration and
     ///      reaches 60 bps at 100/0 concentration, with 10 bps floor at 50/50.
     function _concentrationFeeBps(
@@ -289,28 +348,9 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         uint256 px,
         uint8 baseDec
     ) internal view returns (uint256) {
-        uint256 usdcPost = sheet.evmUsdc + sheet.coreUsdc;
-        uint256 basePost = sheet.evmBase + sheet.coreBase;
-
         if (px == 0) return 10;
 
-        if (tokenIn == usdc && tokenOut == base) {
-            usdcPost += amountInNet;
-            uint256 baseOut = Math.mulDiv(amountInNet, 10 ** uint256(baseDec), px);
-            basePost = baseOut >= basePost ? 0 : (basePost - baseOut);
-        } else if (tokenIn == base && tokenOut == usdc) {
-            basePost += amountInNet;
-            uint256 usdcOut = Math.mulDiv(amountInNet, px, 10 ** uint256(baseDec));
-            usdcPost = usdcOut >= usdcPost ? 0 : (usdcPost - usdcOut);
-        }
-
-        uint256 baseValUsdcRaw = Math.mulDiv(basePost, px, 10 ** uint256(baseDec));
-        uint256 totalValUsdcRaw = usdcPost + baseValUsdcRaw;
-        if (totalValUsdcRaw == 0) return 10;
-
-        // c = |U - B| / (U + B) in [0,1] WAD; 0 at 50/50 and 1 at 100/0.
-        uint256 diff = usdcPost > baseValUsdcRaw ? (usdcPost - baseValUsdcRaw) : (baseValUsdcRaw - usdcPost);
-        uint256 cWad = Math.mulDiv(diff, WAD, totalValUsdcRaw);
+        uint256 cWad = _concentrationWadForSwap(sheet, tokenIn, tokenOut, amountInNet, px, baseDec, true);
         uint256 cExpWad = _expConcentrationCurveWad(cWad); // exponential expansion in [0, WAD]
 
         uint256 minBps = 10;

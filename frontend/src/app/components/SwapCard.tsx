@@ -13,6 +13,7 @@ import {
   ERC20_ABI,
   SOVEREIGN_POOL_ABI,
   FEE_MODULE_ABI,
+  DELTAFLOW_COMPOSITE_FEE_READ_ABI,
   SOVEREIGN_ALM_ABI,
 } from "@/contracts";
 import { useMarket } from "@/app/context/MarketContext";
@@ -39,6 +40,23 @@ const ALM_SPOT_ABI = [
     outputs: [{ name: "pxUsdcPerBase", type: "uint256" }],
   },
 ] as const;
+
+/** Narrow ABI — `SOVEREIGN_POOL_ABI` typings may omit newer pool getters. */
+const POOL_HEDGE_PERP_ABI = [
+  {
+    name: "hedgePerpAssetIndex",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+] as const;
+
+function asBigInt(v: unknown): bigint {
+  if (typeof v === "bigint") return v;
+  if (typeof v === "number") return BigInt(Math.trunc(v));
+  return BigInt(String(v));
+}
 
 // Minimal ABI for fee module quoting
 
@@ -209,6 +227,13 @@ export default function SwapCard() {
     query: { enabled: true },
   });
 
+  const { data: poolHedgePerpIx } = useReadContract({
+    address: pool,
+    abi: POOL_HEDGE_PERP_ABI,
+    functionName: "hedgePerpAssetIndex",
+    query: { enabled: true },
+  });
+
   const isZeroToOne = useMemo(() => {
     if (!poolToken0) return sellToken === "BASE";
     return (
@@ -220,7 +245,97 @@ export default function SwapCard() {
     const mod = (poolSwapFeeModule as string | undefined) || "";
     const isZero = !mod || mod === "0x0000000000000000000000000000000000000000";
     return (isZero ? SWAP_FEE_MODULE_FALLBACK : mod) as `0x${string}`;
-  }, [poolSwapFeeModule]);
+  }, [poolSwapFeeModule, SWAP_FEE_MODULE_FALLBACK]);
+
+  const feeDiagEnabled =
+    !!feeModuleAddress &&
+    feeModuleAddress !== "0x0000000000000000000000000000000000000000";
+
+  const { data: feePerpIndex, isError: feePerpIxErr } = useReadContract({
+    address: feeModuleAddress,
+    abi: DELTAFLOW_COMPOSITE_FEE_READ_ABI,
+    functionName: "perpIndex",
+    query: { enabled: feeDiagEnabled, retry: false },
+  });
+
+  const { data: feeUseMr } = useReadContract({
+    address: feeModuleAddress,
+    abi: DELTAFLOW_COMPOSITE_FEE_READ_ABI,
+    functionName: "useMarketRiskComponent",
+    query: { enabled: feeDiagEnabled && !feePerpIxErr, retry: false },
+  });
+
+  const { data: feeParamsTuple } = useReadContract({
+    address: feeModuleAddress,
+    abi: DELTAFLOW_COMPOSITE_FEE_READ_ABI,
+    functionName: "feeParams",
+    query: { enabled: feeDiagEnabled && !feePerpIxErr, retry: false },
+  });
+
+  const { data: snapshotSzi, isError: snapshotSziErr } = useReadContract({
+    address: feeModuleAddress,
+    abi: DELTAFLOW_COMPOSITE_FEE_READ_ABI,
+    functionName: "snapshotPerpSzi",
+    query: { enabled: feeDiagEnabled && !feePerpIxErr, retry: false },
+  });
+
+  const hMaxSz = feeParamsTuple?.hMaxSz;
+
+  const feeDiagNotes = useMemo(() => {
+    if (feePerpIxErr) return [];
+    const lines: string[] = [];
+    const UINT32_MAX = 4294967295n;
+    if (feePerpIndex !== undefined && poolHedgePerpIx !== undefined) {
+      const a = asBigInt(feePerpIndex);
+      const b = asBigInt(poolHedgePerpIx);
+      if (a !== b) {
+        lines.push(
+          `Fee module perp index (${feePerpIndex}) ≠ pool hedge index (${poolHedgePerpIx}) — on-chain fee snapshot will read the wrong market (often 0 sz). Redeploy the fee module with the correct PERP_INDEX.`
+        );
+      }
+    }
+    if (feePerpIndex !== undefined && asBigInt(feePerpIndex) === UINT32_MAX) {
+      lines.push(
+        "Fee module has perpIndex = uint32.max — perp position is not read; only pending hedge queue counts toward snapshotPerpSzi."
+      );
+    }
+    if (
+      snapshotSzi !== undefined &&
+      snapshotSzi === 0n &&
+      feePerpIndex !== undefined &&
+      asBigInt(feePerpIndex) !== UINT32_MAX
+    ) {
+      lines.push(
+        "snapshotPerpSzi is 0 — the fee module does not see an open perp (or hedge is only in a form this snapshot ignores). Compare with Strategist / HL explorer for the vault."
+      );
+    }
+    if (
+      hMaxSz !== undefined &&
+      hMaxSz > 0n &&
+      snapshotSzi !== undefined &&
+      snapshotSzi !== 0n
+    ) {
+      const abs = snapshotSzi < 0n ? -snapshotSzi : snapshotSzi;
+      if (abs < hMaxSz / 1000n) {
+        lines.push(
+          `Hedge utilization |H|/hMaxSz is tiny (|sz|≈${abs.toString()}, hMaxSz=${hMaxSz.toString()}). The unwind marginal curve sits near its 10 bps “flat” end — same ballpark as the 50/50 concentration floor, so the quote often reads ~10 bps. Lower DF_H_MAX_SZ (fee deploy) to match realistic max hedge size.`
+        );
+      }
+    }
+    if (feeUseMr === false) {
+      lines.push(
+        "Concentration-only mode (DF_USE_MARKET_RISK_COMPONENT=false): fee blends unwind integral with inventory concentration; small trades weight heavily toward the ~10 bps concentration floor at balanced pools."
+      );
+    }
+    return lines;
+  }, [
+    feePerpIxErr,
+    feePerpIndex,
+    poolHedgePerpIx,
+    snapshotSzi,
+    hMaxSz,
+    feeUseMr,
+  ]);
 
   // Vault address (this is what BOTH contracts use)
   const { data: vaultAddr } = useReadContract({
@@ -669,6 +784,60 @@ export default function SwapCard() {
               <code className="text-[9px]">defaultSwapFeeBips</code> in Strategist
               is only used when no fee module is set.
             </p>
+            {!feePerpIxErr && feeDiagEnabled && (
+              <div className="text-[10px] text-[var(--text-muted)] mt-2 space-y-1 border-t border-[var(--border)] pt-2">
+                <div className="font-medium text-[var(--foreground)]">
+                  Fee hedge snapshot (vault, same as module)
+                </div>
+                <div>
+                  Pool hedge index:{" "}
+                  <code className="text-[9px]">
+                    {poolHedgePerpIx?.toString() ?? "…"}
+                  </code>
+                  {" · "}
+                  Module perp index:{" "}
+                  <code className="text-[9px]">
+                    {feePerpIndex?.toString() ?? "…"}
+                  </code>
+                </div>
+                <div>
+                  <code className="text-[9px]">snapshotPerpSzi</code>:{" "}
+                  {snapshotSziErr ? (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      unavailable — upgrade fee module bytecode to expose{" "}
+                      <code className="text-[9px]">snapshotPerpSzi()</code>
+                    </span>
+                  ) : (
+                    <code className="text-[9px]">{snapshotSzi?.toString() ?? "…"}</code>
+                  )}
+                  {hMaxSz !== undefined && hMaxSz > 0n && !snapshotSziErr && snapshotSzi !== undefined ? (
+                    <>
+                      {" "}
+                      <span className="text-[var(--text-muted)]">
+                        · hMaxSz{" "}
+                        <code className="text-[9px]">{hMaxSz.toString()}</code> (util
+                        ≈{" "}
+                        {(() => {
+                          const abs =
+                            snapshotSzi < 0n ? -snapshotSzi : snapshotSzi;
+                          const pct = (abs * 10000n) / hMaxSz;
+                          return `${(Number(pct) / 100).toFixed(2)}%`;
+                        })()}
+                        )
+                      </span>
+                    </>
+                  ) : null}
+                </div>
+                {feeDiagNotes.map((t, i) => (
+                  <p
+                    key={i}
+                    className="text-amber-700 dark:text-amber-300 leading-snug"
+                  >
+                    {t}
+                  </p>
+                ))}
+              </div>
+            )}
           </div>
         )}
 

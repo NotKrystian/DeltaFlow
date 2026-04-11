@@ -75,6 +75,20 @@ library DeltaFeeHelper {
         return Math.mulDiv(total, 1, denom);
     }
 
+    /// @notice Concentration-only unwind leg: 0 bps when the pool is fully one-sided in value (c = WAD), 10 bps at 50/50 (c = 0).
+    /// @dev `cWad` is the same metric as `DeltaFlowCompositeFeeModule`: |U − B| / (U + B) in WAD scale.
+    function unwindFeeBpsFromConcentrationWad(uint256 cWad) internal pure returns (uint256) {
+        if (cWad >= WAD) return 0;
+        return Math.mulDiv(10, WAD - cWad, WAD);
+    }
+
+    /// @notice Zero-crossing quote in concentration-only mode: average unwind bps at pre- and post-trade concentration.
+    function hedgeCrossingUnwindConcAvgBps(uint256 cPreWad, uint256 cPostWad) internal pure returns (uint256) {
+        uint256 a = unwindFeeBpsFromConcentrationWad(cPreWad);
+        uint256 b = unwindFeeBpsFromConcentrationWad(cPostWad);
+        return (a + b) / 2;
+    }
+
     /// @dev Unwind-only: **area under** marginal fee `m(u) = 10·(WAD-u)/WAD` from `utilPost`→`utilPre`, divided by `Δu` → average bps.
     function unwindFeeBpsIntegral(uint256 utilPreWad, uint256 utilPostWad) internal pure returns (uint256) {
         if (utilPreWad <= utilPostWad) return 3;

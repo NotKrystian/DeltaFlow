@@ -1465,6 +1465,67 @@ export const FEE_MODULE_ABI = [
   },
 ] as const;
 
+/** DeltaFlowCompositeFeeModule — read-only diagnostics (perp snapshot, indices, hMax). */
+export const DELTAFLOW_COMPOSITE_FEE_READ_ABI = [
+  {
+    name: "perpIndex",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    name: "useMarketRiskComponent",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "usePerpPriceForFee",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    name: "snapshotPerpSzi",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "int256" }],
+  },
+  {
+    name: "feeParams",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "execPerpBps", type: "uint256" },
+          { name: "execSpotShortfallBps", type: "uint256" },
+          { name: "delayNormalBps", type: "uint256" },
+          { name: "delayStressedBps", type: "uint256" },
+          { name: "basisMaxBps", type: "uint256" },
+          { name: "fundingCapBps", type: "uint256" },
+          { name: "invKappaWad", type: "uint256" },
+          { name: "exhaustLinearWad", type: "uint256" },
+          { name: "exhaustQuadWad", type: "uint256" },
+          { name: "safetyBaseBps", type: "uint256" },
+          { name: "delayStressed", type: "bool" },
+          { name: "perpDepthWad", type: "uint256" },
+          { name: "impactCoeff", type: "uint256" },
+          { name: "hMaxSz", type: "uint256" },
+          { name: "poolNavWad", type: "uint256" },
+        ],
+      },
+    ],
+  },
+] as const;
+
 // ALM ABI (SovereignALM)
 export const SOVEREIGN_ALM_ABI = [
   {
