@@ -324,7 +324,7 @@ export default function SwapCard() {
     }
     if (feeUseMr === false) {
       lines.push(
-        "Concentration-only mode (DF_USE_MARKET_RISK_COMPONENT=false): fee blends unwind integral with inventory concentration; small trades weight heavily toward the ~10 bps concentration floor at balanced pools."
+        "Concentration-only mode (DF_USE_MARKET_RISK_COMPONENT=false): with an open hedge, the fee blends the linear 0–10 bps (in concentration) unwind leg with the inventory curve; with no hedge on the snapshot, the quote is that linear 0–10 bps curve only (not the exponential inventory floor ~10+ bps)."
       );
     }
     return lines;
