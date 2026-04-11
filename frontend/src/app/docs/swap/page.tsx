@@ -4,7 +4,7 @@ import DocsPageShell from "@/app/components/DocsPageShell";
 
 export const metadata: Metadata = {
   title: "Swap · Docs · Delta Flow",
-  description: "How to swap USDC and PURR using the DeltaFlow pool.",
+  description: "How to swap USDC and UETH using the DeltaFlow pool.",
 };
 
 export default function DocsSwapPage() {
@@ -20,8 +20,8 @@ export default function DocsSwapPage() {
       <h2>Steps</h2>
       <ol>
         <li>
-          Pick direction (e.g. USDC → PURR or PURR → USDC). Amounts use the token decimals for
-          the deployed pair (PURR is often 5 decimals on testnet; USDC is 6).
+          Pick direction (e.g. USDC → UETH or UETH → USDC). Amounts use token decimals for
+          your deployed pair (USDC is 6; UETH is typically 18 on EVM).
         </li>
         <li>
           If prompted, <strong>approve</strong> the pool (or router path the UI uses) to spend

@@ -8,9 +8,9 @@ export default function StrategistPage() {
           Strategist console
         </h1>
         <p className="text-[var(--text-muted)] text-sm mb-8 max-w-2xl">
-          Treasury, HyperCore allocation, and vault health for the selected market
-          (PURR or WETH via the header switcher). Hedge queue and mark-based
-          batching read from the vault contract.
+          Treasury, HyperCore allocation, and vault health for the ETH/UETH
+          testnet market. Hedge queue and mark-based batching are read directly
+          from the deployed vault.
         </p>
         <StrategistCard />
       </div>

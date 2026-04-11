@@ -10,7 +10,7 @@ const sections = [
   {
     title: "Swap",
     href: "/docs/swap",
-    blurb: "Execute USDC ↔ PURR swaps against the pool with wallet approvals and slippage.",
+    blurb: "Execute USDC ↔ UETH swaps against the pool with wallet approvals and slippage.",
   },
   {
     title: "Add liquidity (quick transfer)",

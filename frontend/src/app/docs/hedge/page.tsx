@@ -11,7 +11,7 @@ export default function DocsHedgePage() {
   return (
     <DocsPageShell
       title="Hedge (escrow)"
-      description="User-initiated CoreWriter spot flow: open a limit buy with USDC, then claim PURR when fillable."
+      description="User-initiated CoreWriter spot flow: open a limit buy with USDC, then claim base token when fillable."
     >
       <p>
         On <Link href="/">Trade</Link>, open the <strong>Hedge</strong> tab. You will see{" "}
@@ -25,7 +25,7 @@ export default function DocsHedgePage() {
           Approve USDC to the HedgeEscrow contract if required.
         </li>
         <li>
-          Enter USDC size, limit price (USDC per 1 PURR), and size in PURR as the UI requests.
+          Enter USDC size, limit price (USDC per 1 base), and base size as the UI requests.
           Size decimals should match Hyperliquid spot metadata where the UI fetches hints.
         </li>
         <li>

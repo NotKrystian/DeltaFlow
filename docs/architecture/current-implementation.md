@@ -1,6 +1,8 @@
 # Current implementation (trading, fees, routing)
 
-This page describes **what the repository code does today** on **HyperEVM**: **USDC** quoted against a **base spot asset** (the same contracts can target **PURR** or **WETH** with separate deploys and correct spot/perp indices + decimals). The default **`DeployAll`** path wires **DeltaFlow** on-chain fee components; **BalanceSeekingSwapFeeModuleV3** remains available when **`DEPLOY_DELTAFLOW_FEE=false`**. Off-chain **API wallet** hedging is **not** the backend execution path; see **Hedge escrow** below.
+This page describes **what the repository code does today** on **HyperEVM**: **USDC** quoted against a **base spot asset** (the same contracts can target **PURR** or **WETH/UETH** with separate deploys and correct spot/perp indices + decimals). The default **`DeployAll`** path wires **DeltaFlow** on-chain fee components; **BalanceSeekingSwapFeeModuleV3** remains available when **`DEPLOY_DELTAFLOW_FEE=false`**. Off-chain **API wallet** hedging is **not** the backend execution path; see **Hedge escrow** below.
+
+On current testnet, PURR spot depth can be unreliable relative to perp marks, so active testing is ETH-first (UETH spot token + ETH perp index) with optional ALM perp-mark quote mode.
 
 ```mermaid
 sequenceDiagram

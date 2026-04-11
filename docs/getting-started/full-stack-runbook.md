@@ -1,6 +1,6 @@
 # Full stack: deploy, run servers, trade, and fund a test portfolio
 
-This guide takes you from **zero** to **contracts deployed**, **backend + frontend running**, **a few swaps**, and roughly **~$50 notional per side** on **USDC/PURR** plus notes for a **second USDC/WETH** stack. Target chain: **Hyperliquid testnet HyperEVM (chain ID `998`)**.
+This guide takes you from **zero** to **contracts deployed**, **backend + frontend running**, **a few swaps**, and roughly **~$50 notional per side** on **USDC/UETH**. Target chain: **Hyperliquid testnet HyperEVM (chain ID `998`)**.
 
 ## What you need installed
 
@@ -34,19 +34,19 @@ You also need **native gas** on HyperEVM testnet for transactions, and **testnet
    |----------|--------|
    | `PRIVATE_KEY` | Deployer key (no `0x` prefix is fine if your tooling accepts it; match Foundry conventions). |
    | `POOL_MANAGER` | Your protocol pool manager address (see `deploy/testnet.env.example`). |
-   | `SPOT_INDEX_PURR` | Run `forge script contracts/script/ReadSpotIndex.s.sol` on testnet with `TOKEN0`/`TOKEN1` set to PURR/USDC pair, then set the logged spot index. |
-   | `PERP_INDEX_PURR` | **Real** Hyperliquid **perp universe** index for the PURR market — **not** `4294967295` for the standard vault-backed `DeployAll` path (see [Testnet asset IDs](../deployment/testnet-asset-ids.md)). |
-   | `USDC`, `PURR` | Canonical testnet token addresses are already in `deploy/testnet.env.example` unless HL changes them. |
+   | `SPOT_INDEX_WETH` | Run `forge script contracts/script/ReadSpotIndex.s.sol` on testnet with `TOKEN0`/`TOKEN1` set to UETH/USDC pair, then set the logged spot index. |
+   | `PERP_INDEX_WETH` | **Real** Hyperliquid **perp universe** index for ETH market — **not** `4294967295` for the standard vault-backed `DeployAll` path (see [Testnet asset IDs](../deployment/testnet-asset-ids.md)). |
+   | `USDC`, `WETH` | Canonical testnet token addresses are already in `deploy/testnet.env.example` unless HL changes them (`WETH` env var maps to UETH EVM token). |
 
-4. **Optional: deploy USDC/WETH in the same broadcast** — in **`.env`** set:
+4. **Deploy only USDC/WETH (recommended on testnet)** — in **`.env`** set:
 
    ```bash
    DEPLOY_USDC_WETH=true
+   DEPLOY_ONLY_WETH=1
+   USE_PERP_PRICE_FOR_QUOTE_WETH=true
    ```
 
-   and fill **`SPOT_INDEX_WETH`**, **`INVERT_WETH_PX`**, **`PERP_INDEX_WETH`** (real perp index for WETH), same way as PURR. This produces a **second** vault + pool + ALM + HedgeEscrow.
-
-   With **`DEPLOY_USDC_WETH=true`**, `./scripts/deploy_all_testnet.sh` defaults to a **two-phase** broadcast: it deploys **USDC/PURR** first (keep **big blocks** on the deployer), **pauses** so you can switch the wallet to **small blocks** (~0.33s block time), then deploys **USDC/WETH**. Set **`DEPLOY_PAUSE_BETWEEN_STACKS=0`** in the shell if you want both stacks in a single `run()` without pausing.
+   and fill **`SPOT_INDEX_WETH`**, **`INVERT_WETH_PX`**, **`PERP_INDEX_WETH`**. This deploys a single UETH stack and skips PURR.
 
 5. **Deploy and sync app env files**
 
@@ -109,33 +109,24 @@ pnpm dev -- -p 3001
 
 Open **`http://localhost:3001`**. In RainbowKit, **switch the wallet to Hyperliquid testnet (998)**.
 
-## Make a few trades (USDC / PURR)
+## Make a few trades (USDC / UETH)
 
 1. **Fund the wallet** with testnet **USDC** and enough **native token** for gas (per current HL testnet instructions).
-2. Open **Trade** → **Swap**. Approve **USDC** / **PURR** to the pool as prompted, then swap a small amount **USDC → PURR** and optionally **PURR → USDC** so you see both directions succeed.
+2. Open **Trade** → **Swap**. Approve **USDC** / **UETH** to the pool as prompted, then swap a small amount **USDC → UETH** and optionally **UETH → USDC** so you see both directions succeed.
 3. Open **LP** (`/lp`) and **deposit** a small amount via **`depositLP`** (approve vault, then deposit) if you want LP exposure. The app also has **Docs** → **LP provider** at `/docs/lp` for step-by-step copy.
 
-## ~$50 notional per “side” (illustrative)
+## ~$50 notional per “side” (illustrative, UETH path)
 
 Amounts are **illustrative** — use whatever matches your testnet balance.
 
-- **Rough goal:** about **$50 USDC** and about **$50** worth of **PURR** (at spot) in your wallet, and similar **USDC + WETH** notional for the second pool if you use it.
+- **Rough goal:** about **$50 USDC** and about **$50** worth of **UETH** in your wallet.
 - **USDC:** acquire testnet USDC from the official process until you have **≥ 50 USDC** (6 decimals).
-- **PURR:** swap **~50 USDC → PURR** on the **Swap** tab (or until your PURR balance is ~$50 at the UI’s implied price). Keep some USDC left for fees and further swaps.
-- **LP (optional):** on **`/lp`**, deposit a mix of USDC and PURR so the vault holds inventory; your share % and value estimates appear on that page.
+- **UETH:** swap **~50 USDC → UETH** on the **Swap** tab. Keep some USDC left for fees and further swaps.
+- **LP (optional):** on **`/lp`**, deposit a mix of USDC and UETH so the vault holds inventory; your share % and value estimates appear on that page.
 
-## Second pool (secondary USDC / base)
+## Why not PURR on testnet?
 
-After **`DEPLOY_USDC_WETH=true`**, **`sync_env_from_broadcast.py`** writes **`NEXT_PUBLIC_POOL_WETH`**, **`NEXT_PUBLIC_VAULT_WETH`**, **`NEXT_PUBLIC_ALM_WETH`**, **`NEXT_PUBLIC_WETH`**, **`NEXT_PUBLIC_HEDGE_ESCROW_WETH`**, etc.
-
-**Recommended:** Use the **header market switcher** (primary vs secondary) — no manual env swapping. Set optional **`NEXT_PUBLIC_PRIMARY_BASE_SYMBOL`** and **`NEXT_PUBLIC_SECONDARY_BASE_SYMBOL`** so buttons and copy match your deployed assets (defaults: **PURR** / **WETH**).
-
-**Alternatives:**
-
-1. **Temporary single-env override:** point **`NEXT_PUBLIC_POOL` / `VAULT` / `ALM`** at the secondary addresses only if you need a single-market build (integration testing).
-2. **CLI:** **`cast send`** / scripts against **`POOL_WETH`** with the pool ABI.
-
-For **~$50** notional on the secondary side: fund **USDC** and the **secondary base** token per HL testnet flows, then swap or deposit while the switcher is on **secondary**.
+On Hyperliquid testnet, PURR spot can be thin and stale relative to perp marks, leading to noisy spot-anchored execution and poor quote quality for integration tests. Prefer UETH market testing with `USE_PERP_PRICE_FOR_QUOTE_WETH=true`.
 
 ## Strategist after redeploy
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploy full stack to Hyperliquid testnet (998) and sync addresses into frontend/.env.local + backend/.env.
+# Deploy full stack to Hyperliquid testnet (998) and sync addresses into frontend/.env.local + backend/.env + root .env.
 # Requires: forge, cast, PRIVATE_KEY + env from deploy/testnet.env.example at repo root.
 #
 # HyperEVM dual blocks: default "small" blocks have ~3M gas limit; large deployments need "big" blocks (~30M).
@@ -7,6 +7,7 @@
 #
 # When DEPLOY_USDC_WETH=true, default is a two-phase broadcast so you can switch the deployer from big blocks
 # to small blocks (~0.33s) before the second stack — set DEPLOY_PAUSE_BETWEEN_STACKS=0 to use a single `run()`.
+# Set DEPLOY_ONLY_WETH=1 to deploy only the USDC/WETH stack (skip PURR).
 #
 # Default deploy path: **first tx only** (`bootstrapFirstTx` = SovereignVault CREATE), then `runAfterFirstTx` /
 # `runStackPurr` / etc. **Every** `forge script --broadcast` uses **`--slow`** by default (each tx confirms before
@@ -188,6 +189,21 @@ elif [[ "${DEPLOY_SINGLE_SHOT:-}" == "1" ]]; then
   export RPC_URL="$RPC"
   export CHAIN_ID
   python3 "$ROOT/scripts/sync_env_from_broadcast.py" --rpc-url "$RPC" --chain-id "$CHAIN_ID"
+elif [[ "${DEPLOY_ONLY_WETH:-}" == "1" ]]; then
+  echo "DEPLOY_ONLY_WETH=1: deploying USDC/WETH stack only."
+  export DEPLOY_USDC_WETH=true
+  refresh_forge_base
+  "${FORGE_BASE[@]}" --sig 'runStackWeth()' "${FORGE_EXTRA[@]}"
+  if [[ ! -f "$RUN_STACK_WETH_JSON" ]]; then
+    echo "deploy_all_testnet.sh: expected runStackWeth artifact missing: $RUN_STACK_WETH_JSON" >&2
+    exit 1
+  fi
+
+  export RPC_URL="$RPC"
+  export CHAIN_ID
+  python3 "$ROOT/scripts/sync_env_from_broadcast.py" --rpc-url "$RPC" --chain-id "$CHAIN_ID" \
+    --single-stack-is-weth \
+    --broadcast-json "$RUN_STACK_WETH_JSON"
 else
   # Default: first tx alone (--slow), then runAfterFirstTx (FORGE_EXTRA defaults to --slow).
   bootstrap_first_tx

@@ -81,13 +81,17 @@ pnpm dev
 
 ### How to deploy
 
-**Chain:** Hyperliquid **testnet** HyperEVM (**998**). Authoritative env template: [`deploy/testnet.env.example`](./deploy/testnet.env.example). Copy it to the repo root as **`.env`** and fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex.s.sol`](./contracts/script/ReadSpotIndex.s.sol)), plus factory/verifier addresses required by your deployment. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (deploys **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, **`DeltaFlowCompositeFeeModule`**); set **`false`** for **`BalanceSeekingSwapFeeModuleV3`** only. To force ALM quotes from perp mark (useful on illiquid testnet spot), set **`USE_PERP_PRICE_FOR_QUOTE_PURR`** / **`USE_PERP_PRICE_FOR_QUOTE_WETH`**. For debug deployments, set **`SWAP_FEE_MODULE_TIMELOCK_SEC=0`** (immediate fee-module rewires); before production launch, restore **`259200`** (3 days).
+**Chain:** Hyperliquid **testnet** HyperEVM (**998**). Authoritative env template: [`deploy/testnet.env.example`](./deploy/testnet.env.example). Copy it to the repo root as **`.env`** and fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, and WETH/UETH indices (`SPOT_INDEX_WETH`, `PERP_INDEX_WETH`) from [`ReadSpotIndex.s.sol`](./contracts/script/ReadSpotIndex.s.sol) + HL perp metadata. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (deploys **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, **`DeltaFlowCompositeFeeModule`**); set **`false`** for **`BalanceSeekingSwapFeeModuleV3`** only. To force ALM quotes from perp mark (recommended on illiquid testnet spot), set **`USE_PERP_PRICE_FOR_QUOTE_WETH=true`**. To skip PURR stack entirely, set **`DEPLOY_ONLY_WETH=1`**. For debug deployments, set **`SWAP_FEE_MODULE_TIMELOCK_SEC=0`** (immediate fee-module rewires); before production launch, restore **`259200`** (3 days).
 
 **Indices and asset ids** (`10000 + spotIndex`, token indices, perp vs spot): [`docs/deployment/testnet-asset-ids.md`](./docs/deployment/testnet-asset-ids.md). For **`DeployAll`** with an external vault, set **`PERP_INDEX_PURR`** (or WETH) to the real **perp** index for the base asset; see [`deploy/testnet.env.example`](./deploy/testnet.env.example) and [`docs/deployment/pairs-and-scripts.md`](./docs/deployment/pairs-and-scripts.md).
 
 ## End-to-end runbook
 
-Step-by-step: **deploy → start backend + frontend → trade → ~$50 test portfolio (USDC/PURR + notes for USDC/WETH)** — see **[`docs/getting-started/full-stack-runbook.md`](./docs/getting-started/full-stack-runbook.md)**.
+Step-by-step: **deploy → start backend + frontend → trade → ~$50 test portfolio (USDC/UETH)** — see **[`docs/getting-started/full-stack-runbook.md`](./docs/getting-started/full-stack-runbook.md)**.
+
+### Testnet PURR caveat
+
+On Hyperliquid testnet, PURR spot depth can be too thin / stale relative to perp marks. That causes unstable spot-anchored quotes and noisy execution quality during integration testing. Current recommended test path is **USDC/UETH (WETH env var)** with **perp-mark quote mode** enabled for ALM.
 
 ## Deployment
 

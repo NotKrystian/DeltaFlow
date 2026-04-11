@@ -32,9 +32,9 @@ forge build --force
 
 ## 3. Deploy (Hyperliquid testnet)
 
-Copy [`deploy/testnet.env.example`](../../deploy/testnet.env.example) to the repo root as **`.env`** (or export vars). Fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_PURR`** (from [`ReadSpotIndex`](../../contracts/script/ReadSpotIndex.s.sol)), and optional DeltaFlow / V3 fee knobs. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (DeltaFlow composite fee module + surplus + risk engine).
+Copy [`deploy/testnet.env.example`](../../deploy/testnet.env.example) to the repo root as **`.env`** (or export vars). Fill **`PRIVATE_KEY`**, **`POOL_MANAGER`**, **`SPOT_INDEX_WETH`** / **`PERP_INDEX_WETH`** (from [`ReadSpotIndex`](../../contracts/script/ReadSpotIndex.s.sol) + HL perp metadata), and optional DeltaFlow / V3 fee knobs. **`DEPLOY_DELTAFLOW_FEE`** defaults to **`true`** (DeltaFlow composite fee module + surplus + risk engine).
 
-**USDC / PURR (full AMM stack):** Prefer **`./scripts/deploy_all_testnet.sh`** — it passes **`--rpc-url`**, **`--fork-block-number`**, and **`--broadcast`**. HedgeEscrow wiring uses the token **registry** (`getTokenIndex`) plus **`SPOT_INDEX_PURR`** from env for the spot universe index (on-chain `getSpotIndex` uses precompile **`0x080C`**, which Forge simulation does not run).
+**USDC / UETH (full AMM stack):** Prefer **`./scripts/deploy_all_testnet.sh`** — it passes **`--rpc-url`**, **`--fork-block-number`**, and **`--broadcast`**. Set **`DEPLOY_ONLY_WETH=1`** and **`USE_PERP_PRICE_FOR_QUOTE_WETH=true`** for current testnet conditions.
 
 Manual:
 
@@ -46,7 +46,7 @@ forge script contracts/script/DeployAll.s.sol:DeployAll \
   --broadcast -vvvv
 ```
 
-Set env vars as required by `DeployAll` (`PRIVATE_KEY`, `USDC`, `PURR`, `POOL_MANAGER`, `SPOT_INDEX_PURR`, `INVERT_PURR_PX`, fee bips, etc.). For the **standard external-vault stack** (on-chain per-swap perp hedge), set **`PERP_INDEX_PURR`** to the Hyperliquid **perp** index for PURR (not `uint32.max`). Optional **`USE_MARK_MIN_HEDGE_SZ`** (default on in `AmmDeployBase`) uses the vault’s **mark-based ~$10** threshold, **nets** opposite hedge flow against the queue, and escrows until an IOC batch; turn off + no floor for immediate IOC each swap. Optional: `SKIP_HL_AGENT=true`, `RAW_PX_SCALE` (defaults to `1e8`), `DEPLOY_USDC_WETH=true` plus `WETH`, `SPOT_INDEX_WETH`, `INVERT_WETH_PX`, `PERP_INDEX_WETH` for a second stack in one broadcast. **`HedgeEscrow`** is always deployed per stack.
+Set env vars as required by `DeployAll` (`PRIVATE_KEY`, `USDC`, `WETH`, `POOL_MANAGER`, `SPOT_INDEX_WETH`, `INVERT_WETH_PX`, fee bips, etc.). For the **standard external-vault stack** (on-chain per-swap perp hedge), set **`PERP_INDEX_WETH`** to the Hyperliquid **ETH perp** index (not `uint32.max`). Optional **`USE_MARK_MIN_HEDGE_SZ`** (default on in `AmmDeployBase`) uses the vault’s **mark-based ~$10** threshold, **nets** opposite hedge flow against the queue, and escrows until an IOC batch; turn off + no floor for immediate IOC each swap. **`HedgeEscrow`** is always deployed per stack.
 
 See [Current implementation — per-swap hedge & queue](../architecture/current-implementation.md#on-chain-per-swap-perp-hedge-and-batch-queue) and [Pairs and deployment scripts](../deployment/pairs-and-scripts.md).
 

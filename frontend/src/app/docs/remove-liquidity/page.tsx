@@ -27,7 +27,7 @@ export default function DocsRemoveLiquidityPage() {
           Enter the percentage of your LP to burn (or the amount, depending on the current UI).
         </li>
         <li>
-          Confirm the transaction. Underlying USDC and PURR are sent according to vault reserves
+          Confirm the transaction. Underlying USDC and UETH are sent according to vault reserves
           and your share.
         </li>
       </ol>

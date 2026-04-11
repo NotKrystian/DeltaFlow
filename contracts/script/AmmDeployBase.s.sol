@@ -256,7 +256,8 @@ abstract contract AmmDeployBase is Script {
             vm.envOr("SURPLUS_FRACTION_BPS", uint256(1000)),
             fp,
             vm.envOr("VOLATILE_REGIME", false),
-            vm.envOr("DF_USE_MARKET_RISK_COMPONENT", false)
+            vm.envOr("DF_USE_MARKET_RISK_COMPONENT", false),
+            p.usePerpPriceForQuote
         );
 
         fs.setPool(address(pool));

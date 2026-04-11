@@ -30,11 +30,10 @@ const MarketContext = createContext<MarketContextValue | null>(null);
 const STORAGE_KEY = "deltaflow-market";
 
 function readStoredMarketId(): MarketId {
+  if (isSecondaryMarketAvailable()) return "secondary";
   if (typeof window === "undefined") return "primary";
   try {
     const s = localStorage.getItem(STORAGE_KEY);
-    if (s === "secondary" && isSecondaryMarketAvailable()) return "secondary";
-    if (s === "weth" && isSecondaryMarketAvailable()) return "secondary";
     if (s === "primary" || s === "purr") return "primary";
   } catch {
     /* ignore */
@@ -48,7 +47,8 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   const [marketId, setMarketIdState] = useState<MarketId>(readStoredMarketId);
 
   const setMarketId = useCallback((id: MarketId) => {
-    if (id === "secondary" && !isSecondaryMarketAvailable()) return;
+    if (isSecondaryMarketAvailable()) return;
+    if (id === "secondary") return;
     setMarketIdState(id);
     try {
       localStorage.setItem(STORAGE_KEY, id);
@@ -58,10 +58,11 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const market = useMemo(() => {
-    const snap = getMarketSnapshot(marketId);
+    const effectiveId: MarketId = hasSecondaryMarket ? "secondary" : marketId;
+    const snap = getMarketSnapshot(effectiveId);
     if (snap) return snap;
     return getMarketSnapshot("primary")!;
-  }, [marketId]);
+  }, [marketId, hasSecondaryMarket]);
 
   const value = useMemo(
     () => ({

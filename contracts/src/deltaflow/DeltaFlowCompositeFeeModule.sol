@@ -28,7 +28,8 @@ interface IVaultHedgePending {
 
 /// @title DeltaFlowCompositeFeeModule
 /// @notice Risk engine + memo-style fee components; balance sheet = EVM + HyperCore spot + optional perp.
-/// @dev Unwind vs new-risk blend uses `DeltaFeeHelper.blendedQuoteBpsHtml` (`absPost < absPre` on estimated perp delta).
+/// @dev Unwind vs new-risk blend uses `DeltaFeeHelper.blendedQuoteBpsHtml` when market-risk components are enabled.
+///      In concentration-only mode, this module still applies unwind blending so reduce-only flow can get lower fees.
 ///      `SovereignVault.lastHedgeLeg` mirrors IOC legs (open / reduce-only / both) for ops; fee quote uses the balance sheet, not `lastHedgeLeg` directly.
 contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
     uint256 internal constant WAD = 1e18;
@@ -53,6 +54,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
     DeltaFlowFeeMath.FeeParams public feeParams;
     bool public immutable volatileRegimeFlag;
     bool public immutable useMarketRiskComponent;
+    bool public immutable usePerpPriceForFee;
 
     error Composite__PairMismatch();
 
@@ -71,7 +73,8 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         uint256 _surplusFractionBps,
         DeltaFlowFeeMath.FeeParams memory _feeParams,
         bool _volatileRegimeFlag,
-        bool _useMarketRiskComponent
+        bool _useMarketRiskComponent,
+        bool _usePerpPriceForFee
     ) {
         sovereignPool = _pool;
         usdc = _usdc;
@@ -88,6 +91,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         feeParams = _feeParams;
         volatileRegimeFlag = _volatileRegimeFlag;
         useMarketRiskComponent = _useMarketRiskComponent;
+        usePerpPriceForFee = _usePerpPriceForFee;
     }
 
     function getSwapFeeInBips(
@@ -133,7 +137,7 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
 
         uint8 usdcDec = IERC20Metadata(usdc).decimals();
         uint8 baseDec = IERC20Metadata(base).decimals();
-        uint256 px = BalanceSheetLib.pxUsdcPerBase(usdcDec, spotIndex, rawPxScale, rawIsPurrPerUsdc);
+        uint256 px = _pxUsdcPerBase(usdcDec);
 
         uint256 tradeNotionalWad = tokenIn == usdc
             ? Math.mulDiv(amountIn, WAD, 10 ** uint256(usdcDec))
@@ -142,6 +146,9 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         // Net trade size for hedge `sz` delta (10 bps conservative seed → amountInNet).
         uint256 amountInNet = Math.mulDiv(amountIn, BIPS, BIPS + 10);
         int256 deltaSz = _estimatePerpDeltaSz(tokenIn, tokenOut, amountInNet, px, baseDec);
+        uint256 absPre = DeltaFeeHelper.absInt(sheet.perpSzi);
+        int256 hPost = sheet.perpSzi + deltaSz;
+        uint256 absPost = DeltaFeeHelper.absInt(hPost);
 
         DeltaFlowFeeMath.FeeParams memory p = feeParams;
 
@@ -159,12 +166,10 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
                 p.poolNavWad
             );
         } else {
-            rawBps = _concentrationFeeBps(sheet, tokenIn, tokenOut, amountInNet, px, baseDec);
+            uint256 concBps = _concentrationFeeBps(sheet, tokenIn, tokenOut, amountInNet, px, baseDec);
+            rawBps = _blendConcentrationWithUnwind(p.hMaxSz, absPre, absPost, concBps);
         }
 
-        uint256 absPre = DeltaFeeHelper.absInt(sheet.perpSzi);
-        int256 hPost = sheet.perpSzi + deltaSz;
-        uint256 absPost = DeltaFeeHelper.absInt(hPost);
         bool unwind = absPost < absPre;
         bool newRisk = !unwind;
 
@@ -190,6 +195,34 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         if (slice > 0) {
             surplus.accrueFromPool(slice);
         }
+    }
+
+    /// @dev Apply memo-style unwind fraction blend in concentration-only mode.
+    function _blendConcentrationWithUnwind(
+        uint256 hMaxSz,
+        uint256 absPre,
+        uint256 absPost,
+        uint256 concBps
+    ) internal pure returns (uint256) {
+        if (absPre == 0 || absPost >= absPre) return concBps;
+        uint256 unwindFrac = Math.mulDiv(absPre - absPost, WAD, absPre);
+        uint256 utilPre = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPre, WAD, hMaxSz));
+        uint256 utilPost = hMaxSz == 0 ? WAD : Math.min(WAD, Math.mulDiv(absPost, WAD, hMaxSz));
+        uint256 unwindBps = DeltaFeeHelper.unwindFeeBpsIntegral(utilPre, utilPost);
+        uint256 unwindWeight = _inverseExpUnwindWeightWad(unwindFrac);
+        return Math.mulDiv(unwindWeight, unwindBps, WAD) + Math.mulDiv(WAD - unwindWeight, concBps, WAD);
+    }
+
+    /// @dev Inverse-exponential unwind weighting over [0,1]:
+    ///      w(u) = 1 - (1-u)^3, where u = unwind fraction.
+    ///      This strongly favors unwind pricing as u approaches 1 (near full unhedge).
+    function _inverseExpUnwindWeightWad(uint256 unwindFracWad) internal pure returns (uint256) {
+        if (unwindFracWad == 0) return 0;
+        if (unwindFracWad >= WAD) return WAD;
+        uint256 oneMinus = WAD - unwindFracWad;
+        uint256 oneMinus2 = Math.mulDiv(oneMinus, oneMinus, WAD);
+        uint256 oneMinus3 = Math.mulDiv(oneMinus2, oneMinus, WAD);
+        return WAD - oneMinus3;
     }
 
     /// @dev Estimated HL `sz` delta from this swap (buy base → add long hedge sz; sell base → reduce).
@@ -226,6 +259,16 @@ contract DeltaFlowCompositeFeeModule is ISwapFeeModule {
         uint256 up = uint256(coreWei) * (10 ** uint256(perpSzDec - weiDec));
         if (up > type(uint64).max) return type(uint64).max;
         return uint64(up);
+    }
+
+    /// @dev Canonical USDC-per-base px, using perp mark when configured.
+    function _pxUsdcPerBase(uint8 usdcDec) internal view returns (uint256) {
+        if (usePerpPriceForFee) {
+            uint256 rawMark = PrecompileLib.normalizedMarkPx(perpIndex);
+            if (rawMark == 0) return 0;
+            return Math.mulDiv(rawMark, 10 ** uint256(usdcDec), 1_000_000);
+        }
+        return BalanceSheetLib.pxUsdcPerBase(usdcDec, spotIndex, rawPxScale, rawIsPurrPerUsdc);
     }
 
     /// @dev Testnet-friendly dynamic curve: fee expands exponentially with post-trade concentration and

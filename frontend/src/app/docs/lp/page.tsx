@@ -15,13 +15,14 @@ export default function DocsLpPage() {
     >
       <p>
         Open <Link href="/lp">LP</Link> from the header. You must connect a wallet that holds
-        USDC and PURR (or receives LP after deposit) on the same chain as the deployment.
+        USDC and the deployed base token (UETH in the recommended testnet setup), or receive LP
+        after deposit, on the same chain as the deployment.
       </p>
       <h2>Deposit</h2>
       <ol>
         <li>
-          Approve the sovereign vault for the token amounts you plan to deposit (USDC and/or PURR
-          as supported by <code>depositLP</code>).
+          Approve the sovereign vault for the token amounts you plan to deposit (USDC and/or base
+          token as supported by <code>depositLP</code>).
         </li>
         <li>
           Enter amounts and submit <strong>Deposit</strong>. Confirm in your wallet; wait for the

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Merge addresses from Foundry broadcast artifacts into frontend/.env.local and backend/.env.
+Merge addresses from Foundry broadcast artifacts into frontend/.env.local, backend/.env, and root .env.
 
 Run automatically after: forge script ... DeployAll ... --broadcast
 
@@ -137,6 +137,32 @@ def _merge_env(path: Path, updates: dict[str, str], dry_run: bool) -> None:
     print(f"Wrote {path}")
 
 
+def _parse_env(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if not path.exists():
+        return out
+    for line in path.read_text().splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _assert_updates_applied(path: Path, updates: dict[str, str], dry_run: bool) -> None:
+    if dry_run or not updates:
+        return
+    got = _parse_env(path)
+    mismatches: list[str] = []
+    for k, expected in updates.items():
+        actual = got.get(k)
+        if actual != expected:
+            mismatches.append(f"{k}: expected={expected} actual={actual}")
+    if mismatches:
+        raise RuntimeError(f"env sync verification failed for {path}:\n" + "\n".join(mismatches))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Sync deploy addresses into env files from Foundry broadcast JSON.")
     ap.add_argument(
@@ -151,6 +177,12 @@ def main() -> int:
     ap.add_argument("--rpc-url", default=os.environ.get("RPC_URL", os.environ.get("TESTNET_RPC_URL")))
     ap.add_argument("--frontend-env", type=Path, default=ROOT / "frontend" / ".env.local")
     ap.add_argument("--backend-env", type=Path, default=ROOT / "backend" / ".env")
+    ap.add_argument("--root-env", type=Path, default=ROOT / ".env")
+    ap.add_argument(
+        "--single-stack-is-weth",
+        action="store_true",
+        help="When one stack is present, also write EXISTING_POOL_WETH to that pool (DEPLOY_ONLY_WETH path).",
+    )
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -177,6 +209,7 @@ def main() -> int:
     primary = stacks[0]
     fe: dict[str, str] = {}
     be: dict[str, str] = {}
+    root_updates: dict[str, str] = {}
 
     # Primary stack (USDC/PURR or first market)
     fe["NEXT_PUBLIC_POOL"] = primary["pool"]
@@ -196,6 +229,7 @@ def main() -> int:
     be["SOVEREIGN_VAULT"] = primary["vault"]
     be["WATCH_POOL"] = primary["pool"]
     be["CHAIN_ID"] = str(args.chain_id)
+    root_updates["EXISTING_POOL"] = primary["pool"]
 
     he = primary.get("hedge_escrow")
     if not he:
@@ -227,6 +261,10 @@ def main() -> int:
         he_w = w.get("hedge_escrow")
         if he_w:
             fe["NEXT_PUBLIC_HEDGE_ESCROW_WETH"] = he_w
+        root_updates["EXISTING_POOL_WETH"] = w["pool"]
+    elif args.single_stack_is_weth:
+        # DEPLOY_ONLY_WETH path: keep upgrade script target aligned with the newly deployed pool.
+        root_updates["EXISTING_POOL_WETH"] = primary["pool"]
 
     if not args.dry_run:
         if len(bj_list) == 1:
@@ -239,6 +277,10 @@ def main() -> int:
 
     _merge_env(args.frontend_env, fe, args.dry_run)
     _merge_env(args.backend_env, be, args.dry_run)
+    _merge_env(args.root_env, root_updates, args.dry_run)
+    _assert_updates_applied(args.frontend_env, fe, args.dry_run)
+    _assert_updates_applied(args.backend_env, be, args.dry_run)
+    _assert_updates_applied(args.root_env, root_updates, args.dry_run)
 
     if "PURR_TOKEN_INDEX" not in be and not args.dry_run:
         print(

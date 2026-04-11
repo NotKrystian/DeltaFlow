@@ -18,9 +18,9 @@ export default function Home() {
       <div className="w-full max-w-5xl space-y-12 md:space-y-16">
         <div className="text-center space-y-3">
           <p className="text-[var(--text-muted)] text-lg sm:text-xl max-w-lg mx-auto">
-            DeltaFlow: USDC/PURR or USDC/WETH liquidity vaults on{" "}
-            <span className="text-[var(--foreground)]">Hyperliquid</span> — pick the
-            market in the header, then swap, hedge, and LP fees.
+            DeltaFlow: USDC/UETH liquidity vaults on{" "}
+            <span className="text-[var(--foreground)]">Hyperliquid</span> — swap,
+            hedge, and LP fees in ETH-only mode.
           </p>
           <p className="text-sm text-[var(--text-secondary)]">
             <Link

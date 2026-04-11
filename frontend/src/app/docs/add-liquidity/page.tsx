@@ -11,7 +11,7 @@ export default function DocsAddLiquidityPage() {
   return (
     <DocsPageShell
       title="Add liquidity (quick transfer)"
-      description="The Add tab sends USDC and/or PURR into the sovereign vault as plain transfers."
+      description="The Add tab sends USDC and/or UETH into the sovereign vault as plain transfers."
     >
       <p>
         Open <Link href="/">Trade</Link> → <strong>Add</strong>. This path uses ERC-20 transfers

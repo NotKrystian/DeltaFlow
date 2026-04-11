@@ -2,7 +2,7 @@ import { ADDRESSES } from "@/contracts";
 
 export const ZERO = "0x0000000000000000000000000000000000000000" as const;
 
-/** Primary pool (env `NEXT_PUBLIC_POOL` / `PURR`) vs optional second stack (`NEXT_PUBLIC_POOL_WETH`, any base). */
+/** Primary pool (env `NEXT_PUBLIC_POOL`) vs optional secondary stack (`NEXT_PUBLIC_POOL_WETH`). */
 export type MarketId = "primary" | "secondary";
 
 export type TokenMeta = {
