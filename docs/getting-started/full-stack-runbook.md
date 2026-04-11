@@ -84,6 +84,8 @@ You also need **native gas** on HyperEVM testnet for transactions, and **testnet
 
    (Use your real backend URL in production.)
 
+8. **Optional — fee stack only** — If you change **`DeltaFlowCompositeFeeModule`** / **`DeltaFeeHelper`** and need a new on-chain fee module **without** redeploying the pool, use **[Pairs and deployment scripts — Fee-only upgrade](../deployment/pairs-and-scripts.md#fee-only-upgrade-composite-fee-stack)** and **`./scripts/upgrade_fee_module_testnet.sh`**. Then refresh **`frontend/.env.local`** / **`backend/.env`** with the new fee, surplus, and risk engine addresses.
+
 ## Start the servers
 
 **Terminal A — backend**

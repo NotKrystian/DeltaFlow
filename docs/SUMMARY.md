@@ -10,7 +10,7 @@
 ## Architecture
 
 * [System overview](architecture/overview.md)
-* [Current implementation — trading, fees, routing, strategist Core ops, fee unwind blend](architecture/current-implementation.md)
+* [Current implementation — trading, fees, routing, strategist Core ops, hedge path integrals](architecture/current-implementation.md)
 
 ## Protocol
 

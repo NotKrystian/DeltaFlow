@@ -40,6 +40,36 @@ Each deployment gets its own **`SovereignVault`** (its own **DFLP** LP token add
 
 After broadcast, run **`python3 scripts/sync_env_from_broadcast.py`** (or **`./scripts/deploy_all_testnet.sh`** for an all-in-one deploy) to merge addresses into **`frontend/.env.local`** and **`backend/.env`** from **`broadcast/DeployAll.s.sol/<chain>/run-latest.json`**. For other scripts, pass **`--broadcast-json path/to/run-latest.json`**. See [Testnet asset IDs](testnet-asset-ids.md) for **`SPOT_INDEX_*`** and CoreWriter asset ids.
 
+## Fee-only upgrade (composite fee stack)
+
+To deploy **new** **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, and **`DeltaFlowCompositeFeeModule`** bytecode **without** redeploying vault, pool, or ALM (e.g. after changing `contracts/src/deltaflow/*.sol`):
+
+1. Set **`EXISTING_POOL`** and/or **`EXISTING_POOL_WETH`** in **`.env`** to the live **`SovereignPool`** address(es).
+2. Ensure the pool’s **`swapFeeModuleUpdateTimestamp`** is in the past (respect **`SWAP_FEE_MODULE_TIMELOCK_SEC`**; use **`0`** on testnet for repeated rewires).
+3. Run from repo root:
+
+   ```bash
+   ./scripts/upgrade_fee_module_testnet.sh primary   # USDC/PURR pool
+   ./scripts/upgrade_fee_module_testnet.sh weth      # USDC/WETH pool
+   ./scripts/upgrade_fee_module_testnet.sh both
+   ```
+
+   This invokes **[`UpgradeFeeModule.s.sol`](../../contracts/script/UpgradeFeeModule.s.sol)** (`runPrimary` / `runWeth`), which **`broadcast`s** a new fee stack and calls **`pool.setSwapFeeModule(newComposite)`**.
+
+4. Update **`frontend/.env.local`** / **`backend/.env`** with the logged **swap fee module**, **FeeSurplus**, and **DeltaFlowRiskEngine** addresses (or run **`sync_env_from_broadcast.py`** against the new broadcast JSON if you extend the script).
+
+```mermaid
+sequenceDiagram
+  participant Script as UpgradeFeeModule.s.sol
+  participant Pool as SovereignPool
+  participant New as New DeltaFlowCompositeFeeModule
+  Script->>Script: deploy FeeSurplus + RiskEngine + Composite
+  Script->>New: wire surplus + risk
+  Script->>Pool: setSwapFeeModule(newComposite)
+```
+
+See also [Current implementation — fee branches](../architecture/current-implementation.md#composite-quote-branches-getswapfeeinbips).
+
 ## Frontend labels and market switcher
 
 The Next.js app reads **`NEXT_PUBLIC_*`** pool/vault/ALM addresses from **`frontend/.env.local`** (synced by the script above). When a **second** stack is deployed (`NEXT_PUBLIC_POOL_WETH` non-zero), the header **market switcher** toggles **primary** vs **secondary**.

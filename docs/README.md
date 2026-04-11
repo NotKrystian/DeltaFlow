@@ -2,11 +2,11 @@
 
 ## **Introduction**
 
-In it's [Current implementation](architecture/current-implementation.md), DeltaFlow is an automated-market maker which allows traders to swap cryptocurrencies through on-chain liquidity, while overcoming key limitations of traditional AMMs.
+In its [Current implementation](architecture/current-implementation.md), DeltaFlow is an automated-market maker which allows traders to swap cryptocurrencies through on-chain liquidity, while overcoming key limitations of traditional AMMs.
 
 ### Core Features&#x20;
 
-To read a more detailed explanation, see [Architecture](/broken/pages/AX1fHLcc9kWX9CoNbzxW).
+For a system-level picture, see [System overview](architecture/overview.md).
 
 #### Spot-Index Pricing
 
@@ -26,6 +26,7 @@ DeltaFlow address this by hedging inflow swaps on the HyperCore perpetual market
 | ---------------------------------------------------------------- | ---------------------------------------------------------------- |
 | **What the code does today** (fees, swaps, Core, escrow)         | [Current implementation](architecture/current-implementation.md) |
 | Deploy **primary** vs **secondary** USDC/base stack              | [Pairs and deployment scripts](deployment/pairs-and-scripts.md)  |
+| **Fee-only upgrade** (new `DeltaFlowCompositeFeeModule` bytecode) | [Pairs — Fee-only upgrade](deployment/pairs-and-scripts.md#fee-only-upgrade-composite-fee-stack) |
 | **Spot indices, token ids, `10000+spotIndex`**                   | [Testnet asset IDs](deployment/testnet-asset-ids.md)             |
 | Run the stack locally                                            | [Quick start](getting-started/quick-start.md)                    |
 | **Deploy → backend + frontend → trades → fund a test portfolio** | [Full stack runbook](getting-started/full-stack-runbook.md)      |

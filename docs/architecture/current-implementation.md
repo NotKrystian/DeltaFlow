@@ -56,7 +56,43 @@ flowchart TB
   Comp --> Surplus
 ```
 
-Env knobs are prefixed with **`DF_`** and **`SURPLUS_FRACTION_BPS`** / **`VOLATILE_REGIME`** — see [`deploy/testnet.env.example`](../../deploy/testnet.env.example).
+Env knobs are prefixed with **`DF_`** and **`SURPLUS_FRACTION_BPS`** / **`VOLATILE_REGIME`** — see [`deploy/testnet.env.example`](../../deploy/testnet.env.example). Optional **`USE_PERP_PRICE_FOR_QUOTE_*`** wires **`normalizedMarkPx(perpIndex)`** into the composite module for fee valuation when spot is illiquid (`usePerpPriceForFee`).
+
+### Hedge utilization fee (`DeltaFeeHelper`)
+
+Quotes depend on **hedge utilization** **u = |H| / H_max** in WAD, where **H** is net perp **`sz`** from the balance sheet snapshot and **H_max** comes from **`FeeParams.hMaxSz`**.
+
+**Path integrals (area under marginal bps):**
+
+| Leg | Marginal fee (bps) vs **u** | Role |
+|-----|-----------------------------|------|
+| **Unwind** (shrinking **|H|** toward flat) | **m(u) = 10 · (WAD − u) / WAD** — **0 bps** at full util (**u = WAD**), **10 bps** at flat (**u = 0**) | For a segment from **u_post** to **u_pre**, the module uses **(∫ m du) / Δu** (average bps over that util move). Tiny **Δu** uses the midpoint of marginals at the endpoints. |
+| **New risk** (growing **|H|** after flat) | **n(u) = 10 + 50 · g(u)** with **g** the same **(e^(2u/WAD) − 1) / (e^2 − 1)**-style ramp as pool concentration (see **`_expCurveUtilWad`** in `DeltaFeeHelper`) | **∫₀^u_post n(u) du** is evaluated with a **16-step trapezoid** rule. |
+
+**Zero-cross in one quote** (e.g. long → short so **`perpPre`** and **`hPost = perpPre + deltaSz`** have **opposite signs**): the hedge path is modeled as **unwind to flat** then **build the other side**. Total “area” is the **unwind integral from u_pre down to flat** plus the **new-risk integral from flat to u_post**. The quoted average bps is **that sum divided by (u_pre + u_post)** (**`hedgeCrossingPathAvgBps`**). This fixes the case where **|H_pre| = |H_post|** so **`absPost < absPre`** is false even though the trade crossed through neutral.
+
+```mermaid
+flowchart LR
+  u1["u_pre start side"]
+  u0["u = 0 flat"]
+  u2["u_post other side"]
+  u1 -->|"integral unwind marginal"| u0
+  u0 -->|"integral new-risk marginal"| u2
+```
+
+```mermaid
+flowchart TB
+  subgraph unwind["Unwind leg marginal m u"]
+    mw["u = WAD full hedge: 0 bps"]
+    mz["u = 0 flat: 10 bps"]
+    mw --> mz
+  end
+  subgraph newrisk["New-risk leg marginal n u"]
+    nz["u = 0 flat: 10 bps"]
+    nw["u = WAD max hedge: 60 bps"]
+    nz --> nw
+  end
+```
 
 ### Fee routing on swap settlement (pool + vault)
 
@@ -65,23 +101,38 @@ After the pool computes **`effectiveFee`** (in `tokenIn` units), vault-backed sw
 1. **Fee-protected hedge budget (USDC-in swaps):** The pool passes the current swap fee amount to the vault hedge hook as **`usdcFeeProtected`**. Hedge margin bridging cannot consume this protected fee slice for the same swap.
 2. **Foundation LP accrual:** The pool calls **`SovereignVault.creditSwapFeeToFoundation(feeToken, feeAmount)`**. The vault mints LP shares to **`foundation`** (defaults to deployer; strategist can update via **`setFoundation`**) against fee value already added to reserves, so protocol fee earnings accrue as LP ownership.
 
-**Unwind vs new risk (memo-style blend):** The composite module estimates the swap’s effect on **perp hedge size** (`deltaSz`) and compares **`|perpSzi|` before vs after** the trade. When **`absPost < absPre`**, the trade **reduces** absolute hedge exposure → an **unwind-leaning** fee uses **`DeltaFeeHelper.unwindFeeBpsIntegral`**; otherwise **new-risk** components use **`newRiskFeeBpsHtml`**. The displayed fee is a **blend** (`blendedQuoteBpsHtml`). This is **independent** of **`SovereignVault.lastHedgeLeg`** (which records the vault’s last **IOC leg**: open-only, reduce-only, or unwind-then-open).
+### Composite quote branches (`getSwapFeeInBips`)
+
+The module snapshots **`BalanceSheet`**, estimates **`deltaSz`** from the swap direction and size, and sets **`hPost = perpSzi + deltaSz`**. Two **modes**:
+
+**A — Market-risk HTML stack** (`useMarketRiskComponent == true`, env **`DF_USE_MARKET_RISK_COMPONENT`**):
+
+- **`DeltaFeeHelper.blendedQuoteBpsHtml`**
+  - If **hedge crosses zero** (**`perpPre > 0 && hPost < 0`** or the reverse): **`feeBps = hedgeCrossingPathAvgBps(uPre, uPost)`** only (does **not** blend with **`newRiskFeeBpsHtml`** in that branch).
+  - Else: **unwind fraction** = **(|H_pre| − |H_post|) / |H_pre|** when **|H_post| < |H_pre|**; blend **`unwindFeeBpsIntegral`** with **`max(10, newRiskFeeBpsHtml)`** by that fraction.
+
+**B — Concentration-only** (`useMarketRiskComponent == false`):
+
+- **`_concentrationFeeBps`** from post-trade pool inventory concentration (10→60 bps exponential in concentration).
+- **`_blendConcentrationWithUnwind`**: same **crossing-zero** detection using **signed** **`perpSzi`** and **`deltaSz`**; if crossing, **`hedgeCrossingPathAvgBps`**. Otherwise, if **|H_post| < |H_pre|**, blend **`unwindFeeBpsIntegral`** with the concentration fee using **inverse-exponential weight** **`w = 1 − (1 − u_unwind)³`** so larger unwinds pull the quote toward the unwind integral.
+
+**Risk cap:** **`DeltaFlowRiskEngine.validate`** and **`capDisplayedFee`** still apply. **`SovereignVault.lastHedgeLeg`** (IOC leg metadata) is **not** an input to the fee quote.
 
 ```mermaid
 flowchart TB
-  subgraph composite[DeltaFlowCompositeFeeModule.getSwapFeeInBips]
-    S[BalanceSheetLib.snapshot + pending hedge queues]
-    D[Estimate deltaSz from trade]
-    P[perpPre + deltaSz → absPost]
-    Q{absPost < absPre ?}
-    S --> D
-    D --> P
-    P --> Q
-    Q -->|yes: unwind fraction| U[unwindFeeBpsIntegral]
-    Q -->|no: new risk| N[newRiskFeeBpsHtml clamped]
-    U --> B[blendedQuoteBpsHtml → feeInBips]
-    N --> B
-  end
+  S[BalanceSheetLib.snapshot + pending hedge queues]
+  D[Estimate deltaSz from trade]
+  P[hPost = perpSzi + deltaSz]
+  C{Crosses zero?}
+  X[hedgeCrossingPathAvgBps]
+  M{useMarketRiskComponent?}
+  B[blendedQuoteBpsHtml unwind blend + newRiskFeeBpsHtml]
+  K[_concentrationFeeBps + _blendConcentrationWithUnwind]
+  S --> D --> P --> C
+  C -->|yes| X
+  C -->|no| M
+  M -->|yes| B
+  M -->|no| K
 ```
 
 ### Alternative: balance-seeking V3 (`DEPLOY_DELTAFLOW_FEE=false`)
@@ -256,7 +307,8 @@ Do **not** confuse **perp universe** ids with the **`asset`** field for **spot**
 
 - `contracts/src/SovereignPool.sol` — `swap`, fee module hook, ALM quote, **`processSwapHedge`** then conditional **`sendTokensToRecipient`**, **`hedgePerpAssetIndex`** (must match vault).
 - `contracts/src/SovereignALM.sol` — spot quote (**`getSpotPriceUsdcPerBase`**) and vault liquidity check.
-- `contracts/src/deltaflow/` — **`DeltaFlowCompositeFeeModule`**, **`DeltaFlowRiskEngine`**, **`FeeSurplus`**, **`DeltaFlowFeeMath`** (default fee path when **`DEPLOY_DELTAFLOW_FEE=true`**).
+- `contracts/src/deltaflow/` — **`DeltaFlowCompositeFeeModule`**, **`DeltaFlowRiskEngine`**, **`FeeSurplus`**, **`DeltaFlowFeeMath`**, **`DeltaFeeHelper`** (path-integral hedge quotes, **`blendedQuoteBpsHtml`**) (default fee path when **`DEPLOY_DELTAFLOW_FEE=true`**).
+- `contracts/script/UpgradeFeeModule.s.sol` — fee-stack-only upgrade; **`scripts/upgrade_fee_module_testnet.sh`**.
 - `contracts/src/SwapFeeModuleV3.sol` — balance-seeking fee in bips (**`DEPLOY_DELTAFLOW_FEE=false`**).
 - `contracts/src/SovereignVault.sol` — LP, Core bridge/allocate, **`bootstrapHyperCoreAccount`**, **`bridgeInventoryTokenToCore`**, **`fundCoreWithHype`**, **`forceFlushHedgeBatch`**, **`pullPerpUsdcToEvm`**, **`pullCoreSpotTokenToEvm`**, `sendTokensToRecipient`, **`creditSwapFeeToFoundation`**, **`processSwapHedge`** / **`lastHedgeLeg`** / escrow queues (**`minPerpHedgeSz`**, **`pendingHedge*Sz`**, **`pendingHedge*WeiDust`**, **`_pendingPayoutsBuy` / `_pendingPayoutsSell`**).
 - `contracts/src/HedgeEscrow.sol` — CoreWriter limit orders + `claimPurrBuy`.

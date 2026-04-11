@@ -30,7 +30,9 @@ flowchart LR
 
 ## Swap fees
 
-- **DeltaFlowCompositeFeeModule** (`contracts/src/deltaflow/`) — Default when **`DEPLOY_DELTAFLOW_FEE=true`**: **`ISwapFeeModule`** implementation composed with **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, and **`DeltaFlowFeeMath`** parameters (`DF_*` env).
+- **DeltaFlowCompositeFeeModule** (`contracts/src/deltaflow/`) — Default when **`DEPLOY_DELTAFLOW_FEE=true`**: **`ISwapFeeModule`** implementation composed with **`FeeSurplus`**, **`DeltaFlowRiskEngine`**, and **`DeltaFlowFeeMath`** parameters (`DF_*` env). Delegates hedge-shaped quotes to **`DeltaFeeHelper`** (path integrals over marginal bps vs utilization, including **zero-cross** paths — see [Current implementation](../architecture/current-implementation.md#hedge-utilization-fee-deltafeehelper)).
+
+- **DeltaFeeHelper** (`contracts/src/deltaflow/DeltaFeeHelper.sol`) — Pure library: **`unwindFeeBpsIntegral`**, **`hedgeCrossingPathAvgBps`**, **`blendedQuoteBpsHtml`** (market-risk mode), used by the composite module.
 
 - **BalanceSeekingSwapFeeModuleV3** (`SwapFeeModuleV3.sol`) — Used when **`DEPLOY_DELTAFLOW_FEE=false`**: **base + imbalance** fee in bips; **base `decimals()`** and **`rawPxScale` / inversion** match **`SovereignALM`**.
 
