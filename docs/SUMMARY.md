@@ -15,6 +15,7 @@
 ## Protocol
 
 * [Contracts](protocol/contracts.md)
+* [Liquidity](protocol/liquidity.md)
 
 ## Deployment
 
