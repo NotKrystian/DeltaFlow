@@ -1,18 +1,18 @@
 # Welcome
 
-In it's [Current implementation](architecture/current-implementation.md), DeltaFlow is an Automated Market Maker (AMM) on Hyperliquid, which extends the ability of traditional AMMs through:
+## **Introduction**
 
-* Spot-index pricing
-* Vault-held liquidity
-* Hedging swaps on HyperCore
+In it's [Current implementation](architecture/current-implementation.md), DeltaFlow is an automated-market maker which allows traders to swap cryptocurrencies through on-chain liquidity, while overcoming key limitations of traditional AMMs.
 
-## **Design**
+### Core Features&#x20;
+
+To read a more detailed explanation, see [Architecture](/broken/pages/AX1fHLcc9kWX9CoNbzxW).
 
 #### Spot-Index Pricing
 
 The dominant approach for AMMs has been to price swaps based on the underlying pool reserves. If a pool contains 2 ETH and 4000 USDC, the ETH is priced at \~2000 USDC each. In practice, if a trader wanted to purchase 1 ETH from this pool, they would pay \~4012 USDC. This is because most AMMs use the constant product formula, which aims to maintain the value of the product of each token reserve before and after a swap. As a result, when making large trades in illiquid pools, execution price often exceeds the value a trader would pay on centralised or highly liquid markets.&#x20;
 
-DeltaFlow decouples price from token reserves. Using Hyperliquid's Precompiles, we quote prices from Hyperliquid's order book — a deep, highly liquid, rapidly updating market. Traders are no longer forced up the constant-product curve because on-chain liquidity is shallow.
+DeltaFlow decouples price from token reserves. Using Hyperliquid's Precompiles, DeltaFlow quotes prices from Hyperliquid's order book — a deep, highly liquid market. Traders are no longer forced up the constant-product curve because on-chain liquidity is shallow.
 
 #### Swap Hedging
 
