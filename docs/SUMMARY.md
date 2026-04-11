@@ -1,10 +1,11 @@
-# Summary
+# Table of contents
 
 ## Getting started
 
 * [Welcome](README.md)
+* [At a glance](getting-started/at-a-glance.md)
 * [Quick start](getting-started/quick-start.md)
-* [Full stack runbook — deploy, servers, trades, ~$50 test portfolio](getting-started/full-stack-runbook.md)
+* [Full stack runbook — deploy, servers, trades, \~$50 test portfolio](getting-started/full-stack-runbook.md)
 
 ## Architecture
 
