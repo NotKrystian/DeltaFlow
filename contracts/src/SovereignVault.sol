@@ -371,9 +371,11 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 batch = pendingHedgeBuySz;
         pendingHedgeBuySz = 0;
         if (batch > type(uint64).max) revert HedgeBatchTooLarge();
+        uint256 n = _pendingPayoutsBuy.length;
+        (uint256 usdcSum, uint256 baseSum) = _sumPayoutTokens(_pendingPayoutsBuy, n);
         _netHedgePosition(perpIx, true, uint64(batch), 0);
         emit HedgeBatchExecuted(perpIx, true, batch);
-        uint256 n = _pendingPayoutsBuy.length;
+        _topUpEvmAfterHedgeBatch(usdcSum, baseSum);
         for (uint256 i = 0; i < n; i++) {
             HedgePayout memory p = _pendingPayoutsBuy[i];
             _sendTokensToRecipient(p.token, p.recipient, p.amount);
@@ -385,14 +387,38 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 batch = pendingHedgeSellSz;
         pendingHedgeSellSz = 0;
         if (batch > type(uint64).max) revert HedgeBatchTooLarge();
+        uint256 n = _pendingPayoutsSell.length;
+        (uint256 usdcSum, uint256 baseSum) = _sumPayoutTokens(_pendingPayoutsSell, n);
         _netHedgePosition(perpIx, false, uint64(batch), 0);
         emit HedgeBatchExecuted(perpIx, false, batch);
-        uint256 n = _pendingPayoutsSell.length;
+        _topUpEvmAfterHedgeBatch(usdcSum, baseSum);
         for (uint256 i = 0; i < n; i++) {
             HedgePayout memory p = _pendingPayoutsSell[i];
             _sendTokensToRecipient(p.token, p.recipient, p.amount);
         }
         delete _pendingPayoutsSell;
+    }
+
+    /// @dev Sum USDC / base (`purr`) notionals in a payout buffer (before delete).
+    function _sumPayoutTokens(HedgePayout[] storage payouts, uint256 n) internal view returns (uint256 usdcSum, uint256 baseSum) {
+        for (uint256 i = 0; i < n; i++) {
+            address t = payouts[i].token;
+            uint256 a = payouts[i].amount;
+            if (t == usdc) usdcSum += a;
+            else if (t == purr) baseSum += a;
+        }
+    }
+
+    /// @dev Match `processSwapHedge` non-batching path: after IOC, pull USDC from perp margin (and base from Core spot) to EVM
+    ///      so `_sendTokensToRecipient` can pay swap recipients. Batched flushes previously skipped this, so reduce-only closes
+    ///      could leave released margin in perp while paying USDC out from a thin EVM balance.
+    function _topUpEvmAfterHedgeBatch(uint256 usdcSum, uint256 baseSum) internal {
+        if (usdcSum > 0) {
+            _topUpVaultUsdcFromPerpForAmount(usdcSum);
+        }
+        if (baseSum > 0) {
+            _topUpVaultTokenFromCoreSpot(purr, baseSum);
+        }
     }
 
     /// @dev FIFO release `matchSz` of sell-side hedge notion from escrow (opposite-direction netting).

@@ -448,6 +448,7 @@ PY
     echo "* lastHedgeLeg: 1=OpenOnly 2=UnwindOnly 3=UnwindThenOpen. Flat perp + sellPerp IOC => OpenOnly SHORT (not closing a long)."
     echo "* HedgeSliceQueued pendingBuy/pendingSell are emitted after enqueue; the same tx often HedgeBatchExecuted and clears pending when totalSz >= hedgeSzThreshold."
     echo "* HedgePayoutEscrowed is the swap tokenOut amount owed to the recipient when the batch pays out — not necessarily 'USDC withdrawn from a closed perp'; bridge/top-up from perp margin happens on other code paths (e.g. immediate hedge or pullPerpUsdcToEvm)."
+    echo "* If lastHedgeLeg is OpenOnly on a sellPerp batch, the vault read pos<=0 at IOC time (flat or short). A long would have produced UnwindOnly (2) or UnwindThenOpen (3). If HL UI showed a long, check same vault address + hedgePerpAssetIndex, or a position already closed in an earlier block."
   fi
 fi
 
