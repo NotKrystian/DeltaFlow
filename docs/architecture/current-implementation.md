@@ -60,16 +60,21 @@ Env knobs are prefixed with **`DF_`** and **`SURPLUS_FRACTION_BPS`** / **`VOLATI
 
 ### Hedge utilization fee (`DeltaFeeHelper`)
 
-Quotes depend on **hedge utilization** **u = |H| / H_max** in WAD, where **H** is net perp **`sz`** from the balance sheet snapshot and **H_max** comes from **`FeeParams.hMaxSz`**.
+Quotes depend on **hedge utilization** **u = abs(H) / H_max** in WAD, where **H** is net perp **`sz`** from the balance sheet snapshot and **H_max** comes from **`FeeParams.hMaxSz`**.
 
-**Path integrals (area under marginal bps):**
+**Path integrals (area under marginal bps)**
 
-| Leg | Marginal fee (bps) vs **u** | Role |
-|-----|-----------------------------|------|
-| **Unwind** (shrinking **|H|** toward flat) | **m(u) = 10 · (WAD − u) / WAD** — **0 bps** at full util (**u = WAD**), **10 bps** at flat (**u = 0**) | For a segment from **u_post** to **u_pre**, the module uses **(∫ m du) / Δu** (average bps over that util move). Tiny **Δu** uses the midpoint of marginals at the endpoints. |
-| **New risk** (growing **|H|** after flat) | **n(u) = 10 + 50 · g(u)** with **g** the same **(e^(2u/WAD) − 1) / (e^2 − 1)**-style ramp as pool concentration (see **`_expCurveUtilWad`** in `DeltaFeeHelper`) | **∫₀^u_post n(u) du** is evaluated with a **16-step trapezoid** rule. |
+1. **Unwind leg** (reducing **abs(H)** toward flat)
 
-**Zero-cross in one quote** (e.g. long → short so **`perpPre`** and **`hPost = perpPre + deltaSz`** have **opposite signs**): the hedge path is modeled as **unwind to flat** then **build the other side**. Total “area” is the **unwind integral from u_pre down to flat** plus the **new-risk integral from flat to u_post**. The quoted average bps is **that sum divided by (u_pre + u_post)** (**`hedgeCrossingPathAvgBps`**). This fixes the case where **|H_pre| = |H_post|** so **`absPost < absPre`** is false even though the trade crossed through neutral.
+   - **Marginal m(u)** (bps): **m(u) = 10 · (WAD − u) / WAD** — **0 bps** when **u = WAD** (full utilization), **10 bps** when **u = 0** (flat).
+   - **Quote over a segment:** from **u_post** to **u_pre**, the implementation uses the **average** of the marginal curve: **(∫ m du) / Δu**. Very small **Δu** uses the midpoint of marginals at the endpoints.
+
+2. **New-risk leg** (increasing **abs(H)** after flat)
+
+   - **Marginal n(u)** (bps): **n(u) = 10 + 50 · g(u)**, where **g** is the same **(e^(2u/WAD) − 1) / (e^2 − 1)**-style ramp as pool concentration (see **`_expCurveUtilWad`** in **`DeltaFeeHelper`**).
+   - **Integral:** **∫ n du** from **0** to **u_post** is approximated with a **16-step trapezoid** rule.
+
+**Zero-cross in one quote** (e.g. long → short so **`perpPre`** and **`hPost = perpPre + deltaSz`** have **opposite signs**): the hedge path is modeled as **unwind to flat**, then **build the other side**. Total “area” is the **unwind integral from u_pre down to flat** plus the **new-risk integral from flat to u_post**. The quoted average bps is **that sum divided by (u_pre + u_post)** (**`hedgeCrossingPathAvgBps`**). This fixes the case where **abs(H_pre) = abs(H_post)** so **`absPost < absPre`** is false even though the trade crossed through neutral.
 
 ```mermaid
 flowchart LR
