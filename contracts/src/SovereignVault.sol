@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.24;
 
 import {ISovereignVaultMinimal} from "./interfaces/ISovereignVaultMinimal.sol";
 import {ISovereignPool} from "./interfaces/ISovereignPool.sol";
@@ -282,15 +282,9 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         uint64 limitPx = isBuy ? type(uint64).max : 0;
         uint128 cloid = uint128(
-            uint256(
-                keccak256(
-                    abi.encodePacked(block.number, perpIx, isBuy, sz, reduceOnly, address(this), gasleft())
-                )
-            )
+            uint256(keccak256(abi.encodePacked(block.number, perpIx, isBuy, sz, reduceOnly, address(this), gasleft())))
         );
-        CoreWriterLib.placeLimitOrder(
-            perpIx, isBuy, limitPx, sz, reduceOnly, HLConstants.LIMIT_ORDER_TIF_IOC, cloid
-        );
+        CoreWriterLib.placeLimitOrder(perpIx, isBuy, limitPx, sz, reduceOnly, HLConstants.LIMIT_ORDER_TIF_IOC, cloid);
     }
 
     /// @notice Applies incremental hedge `sz` against live Core perp position: closes the opposing leg with reduce-only IOCs first, then opens the remainder.
@@ -400,7 +394,11 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     }
 
     /// @dev Sum USDC / base (`purr`) notionals in a payout buffer (before delete).
-    function _sumPayoutTokens(HedgePayout[] storage payouts, uint256 n) internal view returns (uint256 usdcSum, uint256 baseSum) {
+    function _sumPayoutTokens(HedgePayout[] storage payouts, uint256 n)
+        internal
+        view
+        returns (uint256 usdcSum, uint256 baseSum)
+    {
         for (uint256 i = 0; i < n; i++) {
             address t = payouts[i].token;
             uint256 a = payouts[i].amount;
@@ -500,7 +498,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         bool isBuy = vaultPurrOut;
         uint256 priorDust = isBuy ? pendingHedgeBuyWeiDust : pendingHedgeSellWeiDust;
         uint256 totalWei = uint256(weiAmt) + priorDust;
-        uint64 sz = _baseWeiToPerpSz(perpIx, tokenIdx, totalWei > type(uint64).max ? type(uint64).max : uint64(totalWei));
+        uint64 sz =
+            _baseWeiToPerpSz(perpIx, tokenIdx, totalWei > type(uint64).max ? type(uint64).max : uint64(totalWei));
         uint64 consumedWei = _perpSzToBaseWei(perpIx, tokenIdx, sz);
         uint256 nextDust = totalWei > uint256(consumedWei) ? (totalWei - uint256(consumedWei)) : 0;
         if (isBuy) {
@@ -546,9 +545,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             }
 
             pendingHedgeBuySz += uint256(sz);
-            _pendingPayoutsBuy.push(
-                HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut, sz: sz})
-            );
+            _pendingPayoutsBuy.push(HedgePayout({recipient: recipient, token: swapTokenOut, amount: amountOut, sz: sz}));
             emit HedgePayoutEscrowed(recipient, swapTokenOut, amountOut, true);
             emit HedgeSliceQueued(true, sz, pendingHedgeBuySz, pendingHedgeSellSz);
 
@@ -591,7 +588,11 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         return _pendingPayoutsSell.length;
     }
 
-    function _feeTokenValueInUsdc(address feeToken, uint256 feeAmount, uint256 spotPrice) internal view returns (uint256) {
+    function _feeTokenValueInUsdc(address feeToken, uint256 feeAmount, uint256 spotPrice)
+        internal
+        view
+        returns (uint256)
+    {
         if (feeToken == usdc) return feeAmount;
         if (feeToken == purr) return Math.mulDiv(feeAmount, spotPrice, 10 ** uint256(purrDec));
         return 0;
@@ -830,26 +831,92 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         reservePurr = IERC20(purr).balanceOf(address(this));
     }
 
+    // ============ Share price view functions ============
+
+    /// @notice Total vault NAV in USDC units (6-decimal).
+    ///
+    ///         Components:
+    ///           EVM USDC balance
+    ///         + Core-allocated USDC (yield vaults, last-synced via `_syncAllCoreAllocations`)
+    ///         + EVM PURR valued at spot price
+    ///         + Perp account value (USDC margin bridged to Core + unrealized P&L), signed —
+    ///           positive when the hedge earns, negative when it loses beyond margin.
+    ///
+    ///         The perp component is the key addition: without it, PURR inventory is
+    ///         valued at spot while the offsetting short perp loss is invisible, causing
+    ///         NAV to be overstated when PURR has risen and understated when it has fallen.
+    ///
+    ///         If the ALM is not set, PURR is valued at zero.
+    ///         `totalAllocatedUSDC` may lag; call `syncCoreAllocations()` first for a
+    ///         time-sensitive read.
+    function totalAssets() public view returns (uint256) {
+        uint256 usdcPart = IERC20(usdc).balanceOf(address(this)) + totalAllocatedUSDC;
+
+        // Perp account value: USDC margin sitting on Core + all unrealized P&L.
+        // Only read when hedging is active; the signed value is in 6-decimal USDC
+        // units (same as HyperCore's internal accounting).
+        if (hedgePerpAssetIndex != 0) {
+            PrecompileLib.AccountMarginSummary memory m =
+                PrecompileLib.accountMarginSummary(HLConstants.DEFAULT_PERP_DEX, address(this));
+            if (m.accountValue >= 0) {
+                usdcPart += uint256(int256(m.accountValue));
+            } else {
+                uint256 loss = uint256(-int256(m.accountValue));
+                usdcPart = usdcPart > loss ? usdcPart - loss : 0;
+            }
+        }
+
+        if (alm == address(0)) return usdcPart;
+        uint256 spotPrice = ISpotPricer(alm).getSpotPriceUsdcPerBase();
+        if (spotPrice == 0) return usdcPart;
+        return usdcPart + Math.mulDiv(IERC20(purr).balanceOf(address(this)), spotPrice, 10 ** uint256(purrDec));
+    }
+
+    /// @notice Convert a USDC-denominated value to LP shares at the current share price.
+    ///         Uses the same +1 virtual-share formula as the deposit path.
+    function convertToShares(uint256 assetsUsdc) public view returns (uint256) {
+        return Math.mulDiv(assetsUsdc, totalSupply() + 1, totalAssets() + 1);
+    }
+
+    /// @notice Convert LP shares to their USDC-denominated NAV.
+    function convertToAssets(uint256 shares) public view returns (uint256) {
+        return Math.mulDiv(shares, totalAssets() + 1, totalSupply() + 1);
+    }
+
+    /// @notice Preview shares received for a deposit of `usdcAmount` + `purrAmount`.
+    function previewDeposit(uint256 usdcAmount, uint256 purrAmount) public view returns (uint256) {
+        if (alm == address(0)) revert LP__AlmNotSet();
+        uint256 spotPrice = ISpotPricer(alm).getSpotPriceUsdcPerBase();
+        uint256 depositValue = usdcAmount + Math.mulDiv(purrAmount, spotPrice, 10 ** uint256(purrDec));
+        return convertToShares(depositValue);
+    }
+
+    /// @notice Preview USDC and PURR returned for redeeming `shares`.
+    function previewRedeem(uint256 shares) public view returns (uint256 usdcOut, uint256 purrOut) {
+        uint256 supply = totalSupply();
+        if (supply == 0) return (0, 0);
+        (uint256 reserveUsdc, uint256 reservePurr) = getReserves();
+        usdcOut = Math.mulDiv(shares, reserveUsdc, supply);
+        purrOut = Math.mulDiv(shares, reservePurr, supply);
+    }
+
     /// @notice Deposit USDC and/or PURR to receive LP shares.
     ///
-    ///         Three deposit modes:
+    ///         Two deposit modes:
     ///
     ///         1. First deposit (supply == 0)
     ///            Must be two-sided. Shares = geometric mean of both amounts minus
     ///            MINIMUM_LIQUIDITY, which is permanently locked to prevent share-price
     ///            manipulation on a tiny pool.
     ///
-    ///         2. Subsequent two-sided deposit (both amounts > 0)
-    ///            Oracle-free. Shares = min(USDC_ratio, PURR_ratio) × supply.
-    ///            Any excess of the larger side stays in the vault and accrues to all LPs.
-    ///
-    ///         3. Single-sided deposit (exactly one amount > 0)
-    ///            Requires the ALM to be set (for spot price). Shares are value-weighted:
-    ///            shares = depositValue / poolValue × supply, where both values are
-    ///            expressed in USDC using the current spot price. The deposited token
-    ///            sits in the vault and converts to the other token gradually as traders
-    ///            use the pool, with the direction-aware fee module attracting the trades
-    ///            that drive the conversion.
+    ///         2. Subsequent deposit (supply > 0, one or both amounts > 0)
+    ///            Value-based via ERC4626-style math. Both tokens are converted to a
+    ///            USDC NAV using the ALM spot price, then shares are minted proportional
+    ///            to the deposit's share of the pool's total NAV:
+    ///              shares = depositValueUsdc / totalAssets() × supply
+    ///            This is consistent with `convertToShares()` / `totalAssets()`.
+    ///            For single-sided deposits the deposited token sits in the vault and
+    ///            converts gradually as traders use the pool.
     ///
     /// @param usdcAmount  Amount of USDC to deposit (may be 0 for PURR-only deposit)
     /// @param purrAmount  Amount of PURR to deposit (may be 0 for USDC-only deposit)
@@ -865,7 +932,6 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         // reflected and new depositors pay a fair price.
         _syncAllCoreAllocations();
 
-        (uint256 reserveUsdc, uint256 reservePurr) = getReserves();
         uint256 supply = totalSupply();
 
         if (supply == 0) {
@@ -876,28 +942,16 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
             shares = Math.sqrt(usdcAmount * purrAmount) - MINIMUM_LIQUIDITY;
             _mint(address(0xdead), MINIMUM_LIQUIDITY);
-        } else if (usdcAmount > 0 && purrAmount > 0) {
-            // Option 2 is a two-sided deposit
-            // Oracle-free. min() ensures shares are proportional to whichever
-            // token is the binding constraint; excess of the other is donated. - like univ2
-            shares =
-                Math.min(Math.mulDiv(usdcAmount, supply, reserveUsdc), Math.mulDiv(purrAmount, supply, reservePurr));
         } else {
-            // Option 3 is a single-sided deposit
-            // Users can deposit one token, which gradually converts into the other
-            // Requires spot price to fairly value the one-token contribution.
+            // Subsequent deposit (two-sided or single-sided).
+            // Value both tokens in USDC at spot price, then delegate to convertToShares
+            // so the formula is defined in exactly one place.
             if (alm == address(0)) revert LP__AlmNotSet();
 
-            // spotPrice: USDC per 1 PURR, scaled to usdcDec decimals
-            // e.g. at $5 with 6-decimal USDC → spotPrice = 5_000_000
             uint256 spotPrice = ISpotPricer(alm).getSpotPriceUsdcPerBase();
-            uint256 purrScale = 10 ** uint256(purrDec);
+            uint256 depositValue = usdcAmount + Math.mulDiv(purrAmount, spotPrice, 10 ** uint256(purrDec));
 
-            // Express everything in USDC units for a common denominator
-            uint256 poolValue = reserveUsdc + Math.mulDiv(reservePurr, spotPrice, purrScale);
-            uint256 depositValue = usdcAmount + Math.mulDiv(purrAmount, spotPrice, purrScale);
-
-            shares = Math.mulDiv(depositValue, supply, poolValue);
+            shares = convertToShares(depositValue);
         }
 
         if (shares == 0 || shares < minShares) revert LP__InsufficientShares(shares, minShares);
