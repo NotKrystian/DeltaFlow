@@ -61,6 +61,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     error LP__InsufficientUsdcOut(uint256 got, uint256 min);
     error LP__InsufficientPurrOut(uint256 got, uint256 min);
     error LP__InsufficientEvmUsdc(uint256 available, uint256 needed);
+    error LP__NoPendingWithdrawals();
     error HedgeBatchTooLarge();
     /// @dev Vault EVM USDC lower than USDC notionally required to fund perp margin for this hedge `sz`.
     error InsufficientUSDCForHedge(uint256 required, uint256 available);
@@ -75,6 +76,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
     event LiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 purrAmount, uint256 shares);
     event LiquidityRemoved(address indexed provider, uint256 usdcOut, uint256 purrOut, uint256 shares);
+    event LpWithdrawalQueued(address indexed recipient, uint256 usdcOut, uint256 purrOut, uint256 shares, uint64 closeSz);
+    event LpWithdrawalsFlushed(uint256 count, uint256 totalUsdcPaid, uint256 totalPurrPaid);
     event BridgedToCore(address indexed token, uint256 amount);
     event BridgedToEvm(address indexed token, uint256 amount);
     event CoreVaultMoved(address indexed coreVault, bool isDeposit, uint256 amount);
@@ -131,6 +134,19 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     HedgePayout[] private _pendingPayoutsSell;
 
     event HedgePayoutEscrowed(address indexed recipient, address indexed token, uint256 amount, bool buyPerpSide);
+
+    /// @dev LP withdrawal waiting for perp close proceeds to arrive on EVM.
+    struct LpWithdrawal {
+        address recipient;
+        uint256 usdcOut;
+        uint256 purrOut;
+    }
+
+    LpWithdrawal[] private _pendingLpWithdrawals;
+
+    /// @notice Total USDC owed across all queued LP withdrawals (6-decimal EVM units).
+    ///         Tracks how much USDC must be pulled from Core before flushing.
+    uint256 public pendingLpWithdrawalUsdc;
 
     constructor(address _usdc, address _purr) ERC20("DeltaFlow LP", "DFLP") {
         strategist = msg.sender;
@@ -980,16 +996,25 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         emit LiquidityAdded(msg.sender, usdcAmount, purrAmount, shares);
     }
 
-    /// @notice Burn LP shares and receive pro-rata USDC and PURR.
-    ///         Reverts if USDC allocated to Core exceeds the EVM balance available.
-    ///         In that case, the strategist must call deallocate() first.
-    /// @param shares Amount of LP shares to burn
-    /// @param minUsdc Minimum USDC to receive (slippage protection)
-    /// @param minPurr Minimum PURR to receive (slippage protection)
+    /// @notice Burn LP shares and queue a pro-rata payout.
+    ///
+    ///         Option B queue-based flow:
+    ///         1. Burns shares immediately (share price unaffected for remaining LPs).
+    ///         2. Computes pro-rata USDC and PURR entitlement from EVM+Core reserves.
+    ///         3. If a perp hedge is active, submits a reduce-only IOC to close the
+    ///            LP's proportional share of the open position.  The closed margin/P&L
+    ///            flows back to Core perp account over the next ~0.2–0.5 s.
+    ///         4. Escrows the payout in `_pendingLpWithdrawals`.
+    ///
+    ///         Call `flushLpWithdrawals()` (keeper / any caller) once the perp fill
+    ///         lands to pull the freed USDC to EVM and distribute all queued payouts.
+    ///
+    /// @param shares   Amount of LP shares to burn.
+    /// @param minUsdc  Minimum USDC to receive (slippage guard).
+    /// @param minPurr  Minimum PURR to receive (slippage guard).
     function withdrawLP(uint256 shares, uint256 minUsdc, uint256 minPurr)
         external
         nonReentrant
-        returns (uint256 usdcOut, uint256 purrOut)
     {
         if (shares == 0) revert LP__ZeroAmount();
 
@@ -997,25 +1022,88 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         // receive an accurate pro-rata share of all vault assets including any P&L.
         _syncAllCoreAllocations();
 
-        (uint256 reserveUsdc, uint256 reservePurr) = getReserves();
         uint256 supply = totalSupply();
 
-        usdcOut = Math.mulDiv(shares, reserveUsdc, supply);
-        purrOut = Math.mulDiv(shares, reservePurr, supply);
+        // Pro-rata entitlement from the full EVM reserve.
+        uint256 evmUsdc  = IERC20(usdc).balanceOf(address(this));
+        uint256 evmPurr  = IERC20(purr).balanceOf(address(this));
+        uint256 usdcOut  = Math.mulDiv(shares, evmUsdc, supply);
+        uint256 purrOut  = Math.mulDiv(shares, evmPurr, supply);
 
         if (usdcOut < minUsdc) revert LP__InsufficientUsdcOut(usdcOut, minUsdc);
         if (purrOut < minPurr) revert LP__InsufficientPurrOut(purrOut, minPurr);
 
-        // USDC may be partially allocated to Core — revert if EVM balance is insufficient.
-        // The strategist must call deallocate() to bring funds back before this withdrawal.
-        uint256 evmUsdc = IERC20(usdc).balanceOf(address(this));
-        if (evmUsdc < usdcOut) revert LP__InsufficientEvmUsdc(evmUsdc, usdcOut);
-
+        // Burn shares before any external calls (CEI pattern).
         _burn(msg.sender, shares);
 
-        IERC20(usdc).safeTransfer(msg.sender, usdcOut);
-        IERC20(purr).safeTransfer(msg.sender, purrOut);
+        // Close the LP's proportional share of the perp hedge (reduce-only IOC).
+        // If the perp is not active or the position is flat, closeSz == 0 and
+        // _placePerpIoc is a no-op — the payout is still queued and can be flushed
+        // immediately without waiting for a fill.
+        uint64 closeSz = 0;
+        uint32 perpIx = hedgePerpAssetIndex;
+        if (perpIx != 0) {
+            int64 szi = PrecompileLib.position(address(this), uint16(perpIx)).szi;
+            if (szi != 0) {
+                // LP fraction of the absolute position (rounds down — safe).
+                uint256 absPos = szi > 0 ? uint256(int256(szi)) : uint256(-int256(szi));
+                uint256 rawSz  = Math.mulDiv(shares, absPos, supply);
+                if (rawSz > type(uint64).max) rawSz = type(uint64).max;
+                closeSz = uint64(rawSz);
+                // Buy to close a short; sell to close a long.
+                bool buyToClose = szi < 0;
+                _placePerpIoc(perpIx, buyToClose, closeSz, true, 0);
+            }
+        }
 
-        emit LiquidityRemoved(msg.sender, usdcOut, purrOut, shares);
+        // Escrow the payout for flush.
+        _pendingLpWithdrawals.push(LpWithdrawal({
+            recipient: msg.sender,
+            usdcOut:   usdcOut,
+            purrOut:   purrOut
+        }));
+        pendingLpWithdrawalUsdc += usdcOut;
+
+        emit LpWithdrawalQueued(msg.sender, usdcOut, purrOut, shares, closeSz);
+    }
+
+    /// @notice Pull freed perp USDC to EVM and pay all queued LP withdrawals.
+    ///
+    ///         Can be called by any account (keeper-friendly).  Designed to be called
+    ///         ~1 s after the last `withdrawLP` once the reduce-only IOC has filled
+    ///         and the released margin has settled back to the perp account.
+    ///
+    ///         PURR is paid directly from the EVM balance (it was ring-fenced by
+    ///         pro-rata computation at queue time).  USDC may partly or fully reside
+    ///         on Core — `_topUpVaultUsdcFromPerpForAmount` bridges the shortfall.
+    function flushLpWithdrawals() external nonReentrant {
+        uint256 n = _pendingLpWithdrawals.length;
+        if (n == 0) revert LP__NoPendingWithdrawals();
+
+        // Pull enough USDC from perp → spot → EVM to cover every queued USDC payout.
+        _topUpVaultUsdcFromPerpForAmount(pendingLpWithdrawalUsdc);
+
+        uint256 totalUsdcPaid;
+        uint256 totalPurrPaid;
+
+        for (uint256 i = 0; i < n; i++) {
+            LpWithdrawal memory w = _pendingLpWithdrawals[i];
+
+            if (w.usdcOut > 0) {
+                IERC20(usdc).safeTransfer(w.recipient, w.usdcOut);
+                totalUsdcPaid += w.usdcOut;
+            }
+            if (w.purrOut > 0) {
+                IERC20(purr).safeTransfer(w.recipient, w.purrOut);
+                totalPurrPaid += w.purrOut;
+            }
+
+            emit LiquidityRemoved(w.recipient, w.usdcOut, w.purrOut, 0);
+        }
+
+        delete _pendingLpWithdrawals;
+        pendingLpWithdrawalUsdc = 0;
+
+        emit LpWithdrawalsFlushed(n, totalUsdcPaid, totalPurrPaid);
     }
 }
