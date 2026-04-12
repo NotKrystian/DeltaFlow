@@ -76,7 +76,9 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
     event LiquidityAdded(address indexed provider, uint256 usdcAmount, uint256 purrAmount, uint256 shares);
     event LiquidityRemoved(address indexed provider, uint256 usdcOut, uint256 purrOut, uint256 shares);
-    event LpWithdrawalQueued(address indexed recipient, uint256 usdcOut, uint256 purrOut, uint256 shares, uint64 closeSz);
+    event LpWithdrawalQueued(
+        address indexed recipient, uint256 usdcOut, uint256 purrOut, uint256 shares, uint64 closeSz
+    );
     event LpWithdrawalsFlushed(uint256 count, uint256 totalUsdcPaid, uint256 totalPurrPaid);
     event BridgedToCore(address indexed token, uint256 amount);
     event BridgedToEvm(address indexed token, uint256 amount);
@@ -147,6 +149,11 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     /// @notice Total USDC owed across all queued LP withdrawals (6-decimal EVM units).
     ///         Tracks how much USDC must be pulled from Core before flushing.
     uint256 public pendingLpWithdrawalUsdc;
+
+    /// @notice Total PURR owed across all queued LP withdrawals (EVM wei units).
+    ///         Subtracted from the live EVM balance when computing pro-rata amounts so
+    ///         successive LP withdrawals in the same block cannot double-count.
+    uint256 public pendingLpWithdrawalPurr;
 
     constructor(address _usdc, address _purr) ERC20("DeltaFlow LP", "DFLP") {
         strategist = msg.sender;
@@ -967,8 +974,8 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             // Enforce that the two sides are within FIRST_DEPOSIT_MAX_IMBALANCE_BPS of
             // each other. Uses the larger side as the reference so the tolerance is
             // symmetric: neither side may exceed the other by more than 1%.
-            uint256 larger  = usdcAmount > purrValue ? usdcAmount : purrValue;
-            uint256 smaller = usdcAmount > purrValue ? purrValue  : usdcAmount;
+            uint256 larger = usdcAmount > purrValue ? usdcAmount : purrValue;
+            uint256 smaller = usdcAmount > purrValue ? purrValue : usdcAmount;
             if ((larger - smaller) * 10_000 > larger * FIRST_DEPOSIT_MAX_IMBALANCE_BPS) {
                 revert LP__FirstDepositImbalanced(usdcAmount, purrValue);
             }
@@ -998,7 +1005,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
     /// @notice Burn LP shares and queue a pro-rata payout.
     ///
-    ///         Option B queue-based flow:
+    ///         Queue-based flow:
     ///         1. Burns shares immediately (share price unaffected for remaining LPs).
     ///         2. Computes pro-rata USDC and PURR entitlement from EVM+Core reserves.
     ///         3. If a perp hedge is active, submits a reduce-only IOC to close the
@@ -1012,10 +1019,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     /// @param shares   Amount of LP shares to burn.
     /// @param minUsdc  Minimum USDC to receive (slippage guard).
     /// @param minPurr  Minimum PURR to receive (slippage guard).
-    function withdrawLP(uint256 shares, uint256 minUsdc, uint256 minPurr)
-        external
-        nonReentrant
-    {
+    function withdrawLP(uint256 shares, uint256 minUsdc, uint256 minPurr) external nonReentrant {
         if (shares == 0) revert LP__ZeroAmount();
 
         // Sync Core equity before computing the redemption value so withdrawing LPs
@@ -1024,11 +1028,13 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         uint256 supply = totalSupply();
 
-        // Pro-rata entitlement from the full EVM reserve.
-        uint256 evmUsdc  = IERC20(usdc).balanceOf(address(this));
-        uint256 evmPurr  = IERC20(purr).balanceOf(address(this));
-        uint256 usdcOut  = Math.mulDiv(shares, evmUsdc, supply);
-        uint256 purrOut  = Math.mulDiv(shares, evmPurr, supply);
+        // Pro-rata entitlement from the unencumbered EVM reserve.
+        // Subtract already-queued amounts so successive withdrawals in the same
+        // block cannot double-count tokens that are already reserved for earlier LPs.
+        uint256 evmUsdc = IERC20(usdc).balanceOf(address(this)) - pendingLpWithdrawalUsdc;
+        uint256 evmPurr = IERC20(purr).balanceOf(address(this)) - pendingLpWithdrawalPurr;
+        uint256 usdcOut = Math.mulDiv(shares, evmUsdc, supply);
+        uint256 purrOut = Math.mulDiv(shares, evmPurr, supply);
 
         if (usdcOut < minUsdc) revert LP__InsufficientUsdcOut(usdcOut, minUsdc);
         if (purrOut < minPurr) revert LP__InsufficientPurrOut(purrOut, minPurr);
@@ -1047,7 +1053,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
             if (szi != 0) {
                 // LP fraction of the absolute position (rounds down — safe).
                 uint256 absPos = szi > 0 ? uint256(int256(szi)) : uint256(-int256(szi));
-                uint256 rawSz  = Math.mulDiv(shares, absPos, supply);
+                uint256 rawSz = Math.mulDiv(shares, absPos, supply);
                 if (rawSz > type(uint64).max) rawSz = type(uint64).max;
                 closeSz = uint64(rawSz);
                 // Buy to close a short; sell to close a long.
@@ -1057,12 +1063,9 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         }
 
         // Escrow the payout for flush.
-        _pendingLpWithdrawals.push(LpWithdrawal({
-            recipient: msg.sender,
-            usdcOut:   usdcOut,
-            purrOut:   purrOut
-        }));
+        _pendingLpWithdrawals.push(LpWithdrawal({recipient: msg.sender, usdcOut: usdcOut, purrOut: purrOut}));
         pendingLpWithdrawalUsdc += usdcOut;
+        pendingLpWithdrawalPurr += purrOut;
 
         emit LpWithdrawalQueued(msg.sender, usdcOut, purrOut, shares, closeSz);
     }
@@ -1103,6 +1106,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
 
         delete _pendingLpWithdrawals;
         pendingLpWithdrawalUsdc = 0;
+        pendingLpWithdrawalPurr = 0;
 
         emit LpWithdrawalsFlushed(n, totalUsdcPaid, totalPurrPaid);
     }

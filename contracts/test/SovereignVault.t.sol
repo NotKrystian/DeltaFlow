@@ -769,6 +769,8 @@ contract LPTest is Test {
         uint256 usdcAmt = 1_000 * USDC_UNIT; // 1 000 USDC
         uint256 purrAmt = 1_000 * PURR_UNIT; // 1 000 PURR
 
+        // First deposit requires ALM for value-balance check; 1:1 price balances these amounts.
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp1, usdcAmt, purrAmt);
 
         uint256 expectedShares = Math.sqrt(usdcAmt * purrAmt) - MINIMUM_LIQUIDITY;
@@ -783,6 +785,7 @@ contract LPTest is Test {
     function test_lp_firstDeposit_minimumLiquidityLockedToDead() public {
         uint256 usdcAmt = 1_000 * USDC_UNIT;
         uint256 purrAmt = 1_000 * PURR_UNIT;
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp1, usdcAmt, purrAmt);
 
         vm.prank(lp1);
@@ -797,6 +800,7 @@ contract LPTest is Test {
     function test_lp_firstDeposit_tokensTransferredToVault() public {
         uint256 usdcAmt = 1_000 * USDC_UNIT;
         uint256 purrAmt = 1_000 * PURR_UNIT;
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp1, usdcAmt, purrAmt);
 
         vm.prank(lp1);
@@ -811,6 +815,7 @@ contract LPTest is Test {
     function test_lp_firstDeposit_emitsEvent() public {
         uint256 usdcAmt = 1_000 * USDC_UNIT;
         uint256 purrAmt = 1_000 * PURR_UNIT;
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp1, usdcAmt, purrAmt);
 
         uint256 expectedShares = Math.sqrt(usdcAmt * purrAmt) - MINIMUM_LIQUIDITY;
@@ -826,9 +831,17 @@ contract LPTest is Test {
 
     /// @dev Helper: seed the vault with an initial LP position from lp1.
     function _seedVault(uint256 usdcAmt, uint256 purrAmt) internal returns (uint256 seedShares) {
+        // First deposit now requires ALM (for value-balance check). Compute a balanced
+        // spot price from the exact amounts being deposited, set a temp ALM, then
+        // restore whatever ALM was set before (so _seedWithAlm's real price survives).
+        uint256 balancedSpot = Math.mulDiv(usdcAmt, 10 ** uint256(purr.decimals()), purrAmt);
+        address prevAlm = vault.alm();
+        MockALM tempAlm = new MockALM(balancedSpot);
+        vault.setALM(address(tempAlm));
         _fund(lp1, usdcAmt, purrAmt);
         vm.prank(lp1);
         seedShares = vault.depositLP(usdcAmt, purrAmt, 0);
+        vault.setALM(prevAlm);
     }
 
     function test_lp_subsequentDeposit_proportionalShares() public {
@@ -837,7 +850,9 @@ contract LPTest is Test {
         _seedVault(seedUsdc, seedPurr);
         uint256 supply = vault.totalSupply(); // lp1 shares + MINIMUM_LIQUIDITY
 
-        // lp2 deposits exactly half the pool
+        // lp2 deposits exactly half the pool; ALM at 1:1 price matches seed ratio.
+        vault.setALM(address(new MockALM(USDC_UNIT)));
+
         uint256 usdcAmt = 500 * USDC_UNIT;
         uint256 purrAmt = 500 * PURR_UNIT;
         _fund(lp2, usdcAmt, purrAmt);
@@ -845,10 +860,8 @@ contract LPTest is Test {
         vm.prank(lp2);
         uint256 shares = vault.depositLP(usdcAmt, purrAmt, 0);
 
-        // Expected: min(500/1000 * supply, 500/1000 * supply) = supply / 2
-        uint256 expectedUsdc = Math.mulDiv(usdcAmt, supply, seedUsdc);
-        uint256 expectedPurr = Math.mulDiv(purrAmt, supply, seedPurr);
-        uint256 expected = Math.min(expectedUsdc, expectedPurr);
+        // Value-based: depositValue / totalAssets * supply = 1000 / 2000 * supply = supply / 2
+        uint256 expected = supply / 2;
         assertEq(shares, expected, "proportional shares mismatch");
         assertEq(vault.balanceOf(lp2), shares);
     }
@@ -856,9 +869,11 @@ contract LPTest is Test {
     function test_lp_subsequentDeposit_unbalanced_excessStaysInVault() public {
         _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
 
-        // lp2 deposits too much USDC relative to PURR — excess USDC stays in vault
+        // lp2 deposits unbalanced amounts — value-based shares means all tokens are
+        // taken in and excess USDC value accrues to existing LPs as a donation.
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         uint256 usdcAmt = 800 * USDC_UNIT;
-        uint256 purrAmt = 200 * PURR_UNIT; // only 200 PURR worth of ratio
+        uint256 purrAmt = 200 * PURR_UNIT;
         _fund(lp2, usdcAmt, purrAmt);
 
         uint256 vaultUsdcBefore = IERC20(usdc).balanceOf(address(vault));
@@ -909,6 +924,7 @@ contract LPTest is Test {
     function test_lp_deposit_minSharesSlippage_reverts() public {
         uint256 usdcAmt = 1_000 * USDC_UNIT;
         uint256 purrAmt = 1_000 * PURR_UNIT;
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp1, usdcAmt, purrAmt);
 
         uint256 expectedShares = Math.sqrt(usdcAmt * purrAmt) - MINIMUM_LIQUIDITY;
@@ -1066,7 +1082,8 @@ contract LPTest is Test {
         uint256 seed = 1_000 * USDC_UNIT;
         uint256 shares1 = _seedVault(seed, 1_000 * PURR_UNIT);
 
-        // lp2 deposits the same ratio
+        // lp2 deposits the same ratio (ALM needed for subsequent value-based deposit)
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp2, seed, 1_000 * PURR_UNIT);
         vm.prank(lp2);
         uint256 shares2 = vault.depositLP(seed, 1_000 * PURR_UNIT, 0);
@@ -1079,14 +1096,14 @@ contract LPTest is Test {
         uint256 expected1Usdc = Math.mulDiv(shares1, evmUsdc, supply);
         uint256 expected1Purr = Math.mulDiv(shares1, evmPurr, supply);
 
-        // lp2 withdraws after lp1 has already queued (supply and EVM balance change).
-        // Compute lp2 expected values against the state *after* lp1 queues.
+        // lp2 withdraws after lp1 has already queued. The vault subtracts already-reserved
+        // amounts from the effective balance so lp2 sees the unencumbered portion only.
         vm.prank(lp1);
         vault.withdrawLP(shares1, 0, 0);
 
         uint256 supply2  = vault.totalSupply();
-        uint256 evmUsdc2 = IERC20(usdc).balanceOf(address(vault));
-        uint256 evmPurr2 = purr.balanceOf(address(vault));
+        uint256 evmUsdc2 = IERC20(usdc).balanceOf(address(vault)) - vault.pendingLpWithdrawalUsdc();
+        uint256 evmPurr2 = purr.balanceOf(address(vault))         - vault.pendingLpWithdrawalPurr();
         uint256 expected2Usdc = Math.mulDiv(shares2, evmUsdc2, supply2);
         uint256 expected2Purr = Math.mulDiv(shares2, evmPurr2, supply2);
 
@@ -1113,6 +1130,7 @@ contract LPTest is Test {
         uint256 shares1 = _seedVault(1_000 * USDC_UNIT, 1_000 * PURR_UNIT);
 
         // lp2 deposits unbalanced (800 USDC, 200 PURR) — 600 USDC is "donated"
+        vault.setALM(address(new MockALM(USDC_UNIT)));
         _fund(lp2, 800 * USDC_UNIT, 200 * PURR_UNIT);
         vm.prank(lp2);
         vault.depositLP(800 * USDC_UNIT, 200 * PURR_UNIT, 0);
