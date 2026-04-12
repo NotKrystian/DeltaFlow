@@ -24,6 +24,9 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     uint256 public constant MINIMUM_LIQUIDITY = 1_000;
+    /// @dev Maximum allowed imbalance between the USDC and PURR sides of the first deposit,
+    ///      expressed in basis points. Enforces a delta-neutral starting state.
+    uint256 public constant FIRST_DEPOSIT_MAX_IMBALANCE_BPS = 100; // 1%
 
     address public immutable strategist;
     address public immutable usdc;
@@ -52,6 +55,7 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
     error InsufficientFundsAfterWithdraw();
     error LP__ZeroAmount();
     error LP__FirstDepositRequiresBothTokens();
+    error LP__FirstDepositImbalanced(uint256 usdcValue, uint256 purrValue);
     error LP__AlmNotSet();
     error LP__InsufficientShares(uint256 got, uint256 min);
     error LP__InsufficientUsdcOut(uint256 got, uint256 min);
@@ -935,10 +939,23 @@ contract SovereignVault is ISovereignVaultMinimal, ERC20, ReentrancyGuard {
         uint256 supply = totalSupply();
 
         if (supply == 0) {
-            // Option 1: first deposit
-            // the first depositor sets the initial ratio, which all subsequent value calculations depend on.
-            // Allowing a one-token bootstrap would tie the starting ratio entirely, so we disallow it
+            // First deposit: must be two-sided and value-balanced to start the pool
+            // in a delta-neutral state — equal dollar value on each side means no
+            // immediate corrective hedge is needed.
             if (usdcAmount == 0 || purrAmount == 0) revert LP__FirstDepositRequiresBothTokens();
+            if (alm == address(0)) revert LP__AlmNotSet();
+
+            uint256 spotPrice0 = ISpotPricer(alm).getSpotPriceUsdcPerBase();
+            uint256 purrValue = Math.mulDiv(purrAmount, spotPrice0, 10 ** uint256(purrDec));
+
+            // Enforce that the two sides are within FIRST_DEPOSIT_MAX_IMBALANCE_BPS of
+            // each other. Uses the larger side as the reference so the tolerance is
+            // symmetric: neither side may exceed the other by more than 1%.
+            uint256 larger  = usdcAmount > purrValue ? usdcAmount : purrValue;
+            uint256 smaller = usdcAmount > purrValue ? purrValue  : usdcAmount;
+            if ((larger - smaller) * 10_000 > larger * FIRST_DEPOSIT_MAX_IMBALANCE_BPS) {
+                revert LP__FirstDepositImbalanced(usdcAmount, purrValue);
+            }
 
             shares = Math.sqrt(usdcAmount * purrAmount) - MINIMUM_LIQUIDITY;
             _mint(address(0xdead), MINIMUM_LIQUIDITY);
